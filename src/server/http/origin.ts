@@ -4,8 +4,12 @@ import { ApiError } from "./api-error";
 export function assertAllowedOrigin(request: Request): void {
   const origin = request.headers.get("origin");
   const allowedOrigin = new URL(getEnv().APP_ORIGIN).origin;
+  const requestOrigin = new URL(request.url).origin;
 
-  if (origin === allowedOrigin || (origin === null && ["GET", "HEAD"].includes(request.method))) {
+  if (
+    origin === allowedOrigin ||
+    (origin === null && ["GET", "HEAD"].includes(request.method) && requestOrigin === allowedOrigin)
+  ) {
     return;
   }
 

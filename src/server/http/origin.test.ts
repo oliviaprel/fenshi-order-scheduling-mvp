@@ -37,6 +37,23 @@ describe("origin guard", () => {
     ).not.toThrow();
   });
 
+  it.each(["GET", "HEAD"])(
+    "rejects cross-origin browser %s requests without Origin",
+    (method) => {
+      let error: unknown;
+      try {
+        assertAllowedOrigin(new Request("https://attacker.example.com/api", { method }));
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toMatchObject({
+        status: 403,
+        code: "ORIGIN_NOT_ALLOWED",
+      });
+    },
+  );
+
   it.each([
     ["POST", undefined],
     ["POST", "https://attacker.example.com"],
