@@ -1,0 +1,72 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+enum UserStatus {
+  ACTIVE
+  PAUSED
+  DISABLED
+}
+
+model User {
+  id                 String       @id @default(uuid()) @db.Uuid
+  role               UserRole
+  displayName        String       @db.VarChar(50)
+  phone              String       @unique @db.VarChar(11)
+  passwordHash       String
+  status             UserStatus   @default(ACTIVE)
+  mustChangePassword Boolean      @default(true)
+  passwordChangedAt  DateTime?
+  version            Int          @default(1)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  sessions           Session[]
+  auditLogs          AuditLog[]   @relation("AuditActor")
+}
+
+model Session {
+  id         String   @id @default(uuid()) @db.Uuid
+  tokenHash  String   @unique @db.Char(64)
+  userId     String   @db.Uuid
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  expiresAt  DateTime
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model LoginThrottle {
+  keyHash         String    @id @db.Char(64)
+  windowStartedAt DateTime
+  failureCount    Int
+  blockedUntil    DateTime?
+  updatedAt       DateTime  @updatedAt
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String?  @db.Uuid
+  action      String   @db.VarChar(100)
+  targetType  String   @db.VarChar(50)
+  targetId    String?  @db.VarChar(100)
+  beforeJson  Json?
+  afterJson   Json?
+  requestId   String   @db.VarChar(100)
+  createdAt   DateTime @default(now())
+  actor       User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId, createdAt])
+  @@index([targetType, targetId])
+}
