@@ -1,5 +1,14 @@
 import { createInterface } from "node:readline/promises";
+import { pathToFileURL } from "node:url";
 import { runAdminCreation } from "../src/modules/users/admin-cli";
+
+type ScriptRuntime = {
+  stdin: { isTTY?: boolean };
+  stdout: { isTTY?: boolean; write: (message: string) => unknown };
+  stderr: { write: (message: string) => unknown };
+  argv: readonly string[];
+  createReadline: () => ReturnType<typeof createInterface>;
+};
 
 async function readHiddenPassword(): Promise<string> {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
@@ -48,14 +57,28 @@ async function readHiddenPassword(): Promise<string> {
   });
 }
 
-async function main(): Promise<void> {
-  const readline = createInterface({ input: process.stdin, output: process.stdout });
+export async function runCreateAdminScript(runtime: ScriptRuntime): Promise<number> {
+  const isInteractive = Boolean(runtime.stdin.isTTY && runtime.stdout.isTTY);
+  const hasArguments = runtime.argv.length !== 2;
+
+  if (!isInteractive || hasArguments) {
+    return runAdminCreation({
+      isInteractive,
+      hasArguments,
+      question: async () => "",
+      readHiddenPassword: async () => "",
+      write: (message) => runtime.stdout.write(message),
+      writeError: (message) => runtime.stderr.write(message),
+    });
+  }
+
+  const readline = runtime.createReadline();
   let databaseClientLoaded = false;
 
   try {
-    process.exitCode = await runAdminCreation({
-      isInteractive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-      hasArguments: process.argv.length !== 2,
+    return await runAdminCreation({
+      isInteractive,
+      hasArguments,
       question: (prompt) => readline.question(prompt),
       readHiddenPassword: async () => {
         readline.close();
@@ -64,8 +87,8 @@ async function main(): Promise<void> {
       onDatabaseAccess: () => {
         databaseClientLoaded = true;
       },
-      write: (message) => process.stdout.write(message),
-      writeError: (message) => process.stderr.write(message),
+      write: (message) => runtime.stdout.write(message),
+      writeError: (message) => runtime.stderr.write(message),
     });
   } finally {
     readline.close();
@@ -76,7 +99,19 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch(() => {
-  console.error("Administrator creation failed.");
-  process.exitCode = 1;
-});
+async function main(): Promise<void> {
+  process.exitCode = await runCreateAdminScript({
+    stdin: process.stdin,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    argv: process.argv,
+    createReadline: () => createInterface({ input: process.stdin, output: process.stdout }),
+  });
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().catch(() => {
+    console.error("Administrator creation failed.");
+    process.exitCode = 1;
+  });
+}
