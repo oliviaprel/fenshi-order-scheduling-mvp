@@ -1,3 +1,4 @@
+import type { User } from "../../generated/prisma/client";
 import type { RequestContext } from "../users/user.types";
 import { toPublicUser } from "../users/user.types";
 import { prisma } from "../../server/db/client";
@@ -40,8 +41,14 @@ export async function login(
   return prisma.$transaction(async (tx) => {
     await assertLoginAllowed(tx, phone, context.ip, context.now);
 
-    const currentUser = await tx.user.findUniqueOrThrow({ where: { id: user.id } });
+    const [currentUser] = await tx.$queryRaw<User[]>`
+      SELECT *
+      FROM "User"
+      WHERE "id" = ${user.id}::uuid
+      FOR UPDATE
+    `;
     if (
+      currentUser === undefined ||
       currentUser.status === "DISABLED" ||
       currentUser.passwordHash !== user.passwordHash ||
       currentUser.version !== user.version

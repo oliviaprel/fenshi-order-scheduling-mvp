@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { Client } from "pg";
 import { prisma } from "../../server/db/client";
 import { resetTestDatabase } from "../../server/db/test-database";
 import type { ApiError } from "../../server/http/api-error";
@@ -22,6 +23,48 @@ async function captureApiError(operation: Promise<unknown>): Promise<ApiError> {
   } catch (error) {
     return error as ApiError;
   }
+}
+
+async function waitForLockWaiters(client: Client, minimum: number): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    const result = await client.query<{ waiting: string }>(`
+      SELECT COUNT(*)::text AS waiting
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND wait_event_type = 'Lock'
+    `);
+    if (Number(result.rows[0]?.waiting ?? 0) >= minimum) {
+      return;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  throw new Error(`Expected at least ${minimum} PostgreSQL lock waiters`);
+}
+
+async function waitForLoginInterleaving(client: Client, userId: string): Promise<void> {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    const result = await client.query<{ sessions: string; waiting: string }>(
+      `
+        SELECT
+          (SELECT COUNT(*)::text FROM "Session" WHERE "userId" = $1::uuid) AS sessions,
+          (
+            SELECT COUNT(*)::text
+            FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND wait_event_type = 'Lock'
+          ) AS waiting
+      `,
+      [userId],
+    );
+    const row = result.rows[0];
+    if (Number(row?.sessions ?? 0) >= 2 || Number(row?.waiting ?? 0) >= 2) {
+      return;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  throw new Error("Concurrent login neither completed nor waited on the user lock");
 }
 
 describe("authentication service", () => {
@@ -193,4 +236,115 @@ describe("authentication service", () => {
 
     expect(await prisma.session.count()).toBe(0);
   });
+
+  it(
+    "does not create a session from an old password after a concurrent password change commits",
+    async () => {
+      const user = await createUser();
+      const current = await login(
+        { phone: user.phone, password: "secure-pass-2026" },
+        {
+          ip: "127.0.0.1",
+          now: new Date("2026-07-31T00:00:00.000Z"),
+          requestId: "current-session",
+        },
+      );
+      const actor = await authenticateSession(
+        current.token,
+        new Date("2026-07-31T00:01:00.000Z"),
+      );
+      if (actor === null) {
+        throw new Error("Expected an authenticated user");
+      }
+
+      const gateKey = 520_260_731;
+      const gateClient = new Client({ connectionString: process.env.DATABASE_URL });
+      let gateLocked = false;
+      let changeOperation: Promise<void> | undefined;
+      let loginOperation: ReturnType<typeof login> | undefined;
+
+      await gateClient.connect();
+      try {
+        await prisma.$executeRawUnsafe(`
+          CREATE OR REPLACE FUNCTION test_gate_password_change()
+          RETURNS trigger
+          LANGUAGE plpgsql
+          AS $$
+          BEGIN
+            IF NEW."passwordHash" IS DISTINCT FROM OLD."passwordHash" THEN
+              PERFORM pg_advisory_xact_lock(${gateKey});
+            END IF;
+            RETURN NEW;
+          END;
+          $$
+        `);
+        await prisma.$executeRawUnsafe(`
+          CREATE TRIGGER test_gate_password_change_trigger
+          BEFORE UPDATE OF "passwordHash" ON "User"
+          FOR EACH ROW
+          EXECUTE FUNCTION test_gate_password_change()
+        `);
+        await gateClient.query("SELECT pg_advisory_lock($1)", [gateKey]);
+        gateLocked = true;
+
+        changeOperation = changeOwnPassword(
+          actor,
+          {
+            currentPassword: "secure-pass-2026",
+            newPassword: "new-secure-pass-2026",
+          },
+          {
+            requestId: "concurrent-password-change",
+            currentTokenHash: hashSessionToken(current.token),
+          },
+        );
+        await waitForLockWaiters(gateClient, 1);
+
+        loginOperation = login(
+          { phone: user.phone, password: "secure-pass-2026" },
+          {
+            ip: "127.0.0.2",
+            now: new Date("2026-07-31T00:02:00.000Z"),
+            requestId: "concurrent-old-password-login",
+          },
+        );
+        await waitForLoginInterleaving(gateClient, user.id);
+
+        await gateClient.query("SELECT pg_advisory_unlock($1)", [gateKey]);
+        gateLocked = false;
+
+        const [changeResult, loginResult] = await Promise.allSettled([
+          changeOperation,
+          loginOperation,
+        ]);
+        expect(changeResult.status).toBe("fulfilled");
+        expect(loginResult.status).toBe("rejected");
+        if (loginResult.status === "rejected") {
+          expect(loginResult.reason).toMatchObject({
+            status: 401,
+            code: "INVALID_CREDENTIALS",
+          });
+        }
+        expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
+      } finally {
+        if (gateLocked) {
+          await gateClient.query("SELECT pg_advisory_unlock($1)", [gateKey]);
+        }
+        const pendingOperations: Promise<unknown>[] = [];
+        if (changeOperation !== undefined) {
+          pendingOperations.push(changeOperation);
+        }
+        if (loginOperation !== undefined) {
+          pendingOperations.push(loginOperation);
+        }
+        await Promise.allSettled(pendingOperations);
+        await prisma.$executeRawUnsafe(
+          'DROP TRIGGER IF EXISTS test_gate_password_change_trigger ON "User"',
+        );
+        await prisma.$executeRawUnsafe("DROP FUNCTION IF EXISTS test_gate_password_change()");
+        await gateClient.end();
+      }
+    },
+    15_000,
+  );
 });
