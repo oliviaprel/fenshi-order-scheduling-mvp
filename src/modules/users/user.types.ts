@@ -17,7 +17,7 @@ export type PublicUser = {
   updatedAt: Date;
 };
 
-export function toPublicUser(user: User): PublicUser {
+export function toPublicUser(user: PublicUser): PublicUser {
   return {
     id: user.id,
     role: user.role,
