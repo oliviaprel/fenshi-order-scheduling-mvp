@@ -92,7 +92,7 @@ E2E 由管理员通过真实 API 创建专用普通用户，管理员真实退�
 | 门禁 | 结果 |
 |---|---|
 | `npm test` | 单元 8 files / 32 tests；集成 11 files / 56 tests，全部通过 |
-| `npm run test:e2e` | 17 tests 全部通过；管理员与认证文件并行运行无共享用户污染 |
+| `npm run test:e2e` | 20 tests 全部通过；管理员与认证文件并行运行无共享用户污染 |
 | `npm run lint` | 通过，0 错误 |
 | `npm run typecheck` | 通过，0 错误 |
 | `npm run build` | Next.js 16.2.12 生产构建成功；`/admin/users` 为动态服务端路由 |
@@ -148,6 +148,15 @@ E2E 由管理员通过真实 API 创建专用普通用户，管理员真实退�
 4. **禁用成功焦点丢失**：旧实现尝试恢复已被删除的“禁用”按钮，焦点落到 body。修复在 DOM 提交后选择同一用户行当前可见的“编辑”按钮作为稳定逻辑后继，390/768/1440 三视口均验证。
 
 为保证这些状态不能部分提交，客户端把 `data`、`activeQuery`、`currentCursor`、`cursorHistory` 合并为单一 `listView` state；网络请求只返回候选结果，各操作仅在成功后一次提交新 view。
+
+### 主流程审查 Fix Round 2/5
+
+主流程复核继续提出 2 个 Important，均以无 sleep 的确定性 route gate 先取得 RED，再修复并复跑：
+
+1. **同名用户禁用后的焦点身份错误**：创建两个相同 `displayName` 的真实用户并禁用列表第二行，旧实现按非唯一 accessible name 找到第一枚“编辑”按钮，焦点落错用户。修复为桌面行、移动卡片和编辑按钮携带不展示的 `data-user-id`，焦点恢复按 `user.id` 与当前可见按钮共同定位；E2E 同时把行内手机号映射回创建 API 返回的稳定 id，确认禁用的是第二个实体且焦点回到该实体。
+2. **重叠请求混合数据和视图元数据**：分别用 gate 延迟真实搜索、下一页请求，再交错执行真实创建、编辑。旧实现中创建刷新用空 query 覆盖搜索结果；编辑刷新也请求 `limit=10` 而丢失下一页 cursor。修复为每次列表请求分配单调 generation，并绑定完整 `activeQuery/currentCursor/cursorHistory` 快照；创建、编辑刷新读取 latest-requested metadata，只有最新 generation 能写入 data/error/loading，且 data 与元数据一次原子提交。较旧响应即使最后到达也不能覆盖新视图。
+
+新增 3 条浏览器测试全部从预期 RED 转为 GREEN；管理员定向结果为 `12 passed`，全量结果为 `20 passed`。测试 gate 直接控制两条真实 GET 的上游响应释放顺序，不使用超时等待。为避免开发服务器在全套运行中承受 9 个 fixture 并行 POST 偶发 `ECONNRESET`，分页竞态的真实测试数据改为顺序创建，产品竞态步骤不变。
 
 ## 顾虑与后续观察
 

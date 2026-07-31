@@ -32,6 +32,14 @@ type ListView = {
   cursorHistory: Array<string | null>;
 };
 
+type ListMetadata = Omit<ListView, "data">;
+
+type ListRequestResult = {
+  data: ManagedUserList;
+  metadata: ListMetadata;
+  generation: number;
+};
+
 export function UserList({ initialData }: Readonly<{ initialData: ManagedUserList }>) {
   const [listView, setListView] = useState<ListView>({
     data: initialData,
@@ -47,66 +55,91 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
   const [isLoading, setIsLoading] = useState(false);
   const errorRef = useRef<HTMLDivElement>(null);
   const { data, activeQuery, currentCursor, cursorHistory } = listView;
+  const committedMetadataRef = useRef<ListMetadata>({
+    activeQuery: "",
+    currentCursor: null,
+    cursorHistory: [],
+  });
+  const latestRequestedMetadataRef = useRef<ListMetadata>({
+    activeQuery: "",
+    currentCursor: null,
+    cursorHistory: [],
+  });
+  const requestGenerationRef = useRef(0);
 
   useEffect(() => {
     if (error !== null) errorRef.current?.focus();
   }, [error]);
 
-  async function fetchList(nextQuery: string, cursor: string | null): Promise<ManagedUserList | null> {
+  async function requestList(metadata: ListMetadata): Promise<ListRequestResult | null> {
+    const requestMetadata = {
+      ...metadata,
+      cursorHistory: [...metadata.cursorHistory],
+    };
+    const generation = ++requestGenerationRef.current;
+    latestRequestedMetadataRef.current = requestMetadata;
     setIsLoading(true);
     setError(null);
     try {
-      return await listAdminUsers({
-        ...(nextQuery.length === 0 ? {} : { query: nextQuery }),
-        ...(cursor === null ? {} : { cursor }),
+      const result = await listAdminUsers({
+        ...(requestMetadata.activeQuery.length === 0 ? {} : { query: requestMetadata.activeQuery }),
+        ...(requestMetadata.currentCursor === null ? {} : { cursor: requestMetadata.currentCursor }),
         limit: PAGE_SIZE,
       });
+      if (generation !== requestGenerationRef.current) return null;
+      return { data: result, metadata: requestMetadata, generation };
     } catch (caught) {
-      setError(caught instanceof ApiClientError ? caught.message : "加载失败，请稍后重试");
+      if (generation === requestGenerationRef.current) {
+        latestRequestedMetadataRef.current = committedMetadataRef.current;
+        setError(caught instanceof ApiClientError ? caught.message : "加载失败，请稍后重试");
+      }
       return null;
     } finally {
-      setIsLoading(false);
+      if (generation === requestGenerationRef.current) setIsLoading(false);
     }
   }
 
-  async function refreshCurrent(): Promise<boolean> {
-    const result = await fetchList(activeQuery, currentCursor);
-    if (result === null) return false;
-    setListView((current) => ({ ...current, data: result }));
+  function commitList(result: ListRequestResult | null): boolean {
+    if (result === null || result.generation !== requestGenerationRef.current) return false;
+    const nextView = { data: result.data, ...result.metadata };
+    committedMetadataRef.current = result.metadata;
+    latestRequestedMetadataRef.current = result.metadata;
+    setListView(nextView);
     return true;
+  }
+
+  async function refreshCurrent(): Promise<boolean> {
+    const metadata = latestRequestedMetadataRef.current;
+    return commitList(await requestList(metadata));
   }
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextQuery = query.trim();
-    const result = await fetchList(nextQuery, null);
-    if (result === null) return;
-    setListView({ data: result, activeQuery: nextQuery, currentCursor: null, cursorHistory: [] });
+    commitList(await requestList({
+      activeQuery: nextQuery,
+      currentCursor: null,
+      cursorHistory: [],
+    }));
   }
 
   async function handleNext() {
     if (data.nextCursor === null) return;
     const nextCursor = data.nextCursor;
-    const result = await fetchList(activeQuery, nextCursor);
-    if (result === null) return;
-    setListView((current) => ({
-      ...current,
-      data: result,
+    commitList(await requestList({
+      activeQuery,
       currentCursor: nextCursor,
-      cursorHistory: [...current.cursorHistory, currentCursor],
+      cursorHistory: [...cursorHistory, currentCursor],
     }));
   }
 
   async function handlePrevious() {
     const previousCursor = cursorHistory.at(-1);
     if (previousCursor === undefined) return;
-    const result = await fetchList(activeQuery, previousCursor);
-    if (result === null) return;
-    setListView((current) => ({
-      ...current,
-      data: result,
+    commitList(await requestList({
+      activeQuery,
       currentCursor: previousCursor,
-      cursorHistory: current.cursorHistory.slice(0, -1),
+      cursorHistory: cursorHistory.slice(0, -1),
     }));
   }
 
@@ -133,11 +166,12 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
     await refreshCurrent();
   }
 
-  function focusVisibleEditAction(displayName: string) {
+  function focusVisibleEditAction(userId: string) {
     requestAnimationFrame(() => {
-      const editAction = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-        (button) =>
-          button.getAttribute("aria-label") === `编辑${displayName}` && button.offsetParent !== null,
+      const editAction = Array.from(
+        document.querySelectorAll<HTMLButtonElement>('button[data-user-action="edit"]'),
+      ).find(
+        (button) => button.dataset.userId === userId && button.offsetParent !== null,
       );
       editAction?.focus();
     });
@@ -155,7 +189,7 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
       });
       mergeUser(updated);
       setConfirmation(null);
-      focusVisibleEditAction(updated.displayName);
+      focusVisibleEditAction(updated.id);
     } catch (caught) {
       if (caught instanceof ApiClientError && caught.code === "USER_VERSION_CONFLICT") {
         setConfirmation(null);
@@ -170,7 +204,7 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
 
   const actionButtons = (user: ManagedUserDto) => (
     <div className="user-actions">
-      <button className="text-button" type="button" aria-label={`编辑${user.displayName}`} onClick={() => setEditingUser(user)}>编辑</button>
+      <button className="text-button" type="button" data-user-id={user.id} data-user-action="edit" aria-label={`编辑${user.displayName}`} onClick={() => setEditingUser(user)}>编辑</button>
       <button className="text-button" type="button" aria-label={`重置${user.displayName}密码`} onClick={() => setResetUser(user)}>重置密码</button>
       {user.status === "DISABLED" ? null : (
         <button className="text-button danger-text" type="button" aria-label={`禁用${user.displayName}`} onClick={() => setConfirmation({ kind: "disable", user })}>禁用</button>
@@ -205,7 +239,7 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
               <thead><tr><th scope="col">账户</th><th scope="col">手机号</th><th scope="col">状态</th><th scope="col">创建时间</th><th scope="col">最后更新</th><th scope="col">操作</th></tr></thead>
               <tbody>
                 {data.items.map((user) => (
-                  <tr key={user.id}>
+                  <tr key={user.id} data-user-id={user.id}>
                     <th scope="row">{user.displayName}</th><td>{user.phone}</td><td><StatusBadge status={user.status} /></td><td>{formatDate(user.createdAt)}</td><td>{formatDate(user.updatedAt)}</td><td>{actionButtons(user)}</td>
                   </tr>
                 ))}
@@ -214,7 +248,7 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
           </div>
           <div className="mobile-user-cards">
             {data.items.map((user) => (
-              <article className="user-card" key={user.id} aria-label={`${user.displayName} ${user.phone} ${user.status === "ACTIVE" ? "正常" : user.status === "PAUSED" ? "已暂停" : "已禁用"}`}>
+              <article className="user-card" key={user.id} data-user-id={user.id} aria-label={`${user.displayName} ${user.phone} ${user.status === "ACTIVE" ? "正常" : user.status === "PAUSED" ? "已暂停" : "已禁用"}`}>
                 <div className="user-card-heading"><h2>{user.displayName}</h2><StatusBadge status={user.status} /></div>
                 <p className="user-phone">{user.phone}</p>
                 <dl><div><dt>创建时间</dt><dd>{formatDate(user.createdAt)}</dd></div><div><dt>最后更新</dt><dd>{formatDate(user.updatedAt)}</dd></div></dl>
