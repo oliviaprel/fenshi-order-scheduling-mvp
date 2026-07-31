@@ -35,7 +35,7 @@ npm run test:e2e -- e2e/admin-users.spec.ts
 
 ## 实现摘要
 
-- `admin/layout.tsx` 在服务端调用 `requireAdmin()`；普通用户触发 Next `forbidden()`，导航响应为真实 HTTP 403。
+- `admin/layout.tsx` 在服务端调用 `requireAdmin()`；数据获取 page 在调用 `listManagedUsers()` 前再次独立鉴权并转换到 Next `forbidden()`，避免把 layout 当作数据访问边界。普通用户导航响应为真实 HTTP 403。
 - 首屏在服务器调用 `listManagedUsers()`；搜索、下一页、上一页和刷新均调用 `/api/admin/users`。
 - 创建、编辑、暂停、恢复、禁用和重置密码全部调用既有真实管理员 API。
 - 编辑 PATCH 携带当前 `version`。`USER_VERSION_CONFLICT` 显示固定文案“该用户已被其他管理员修改，请刷新后重试”，并提供刷新动作。
@@ -54,6 +54,8 @@ npm run test:e2e -- e2e/admin-users.spec.ts
 - 当前 URL 不包含该密码；
 - `JSON.stringify(localStorage)` 与 `JSON.stringify(sessionStorage)` 不包含该密码；
 - 收集的全部前端 console message 不包含该密码。
+
+上述检查先在页面上下文和本地 predicate 中计算是否保留，仅把 boolean 交给 Playwright matcher；失败日志不会把临时密码作为 expected value 输出。
 
 Playwright 配置保持 `trace: off`、`screenshot: off`、`video: off`，不会生成携带密码的失败产物。
 
@@ -80,6 +82,7 @@ E2E 由管理员通过真实 API 创建专用普通用户，管理员真实退�
 
 - 390 和 768 使用卡片；1440 使用表格。
 - “新增用户”通过聚焦后按 Enter 打开，证明关键操作可由键盘触发。
+- 重置和禁用都通过 Enter 打开；modal 初始聚焦安全的“取消”，Shift+Tab 在首尾控件间圈定，Escape 关闭后恢复触发器焦点，再用 Tab+Enter 完成确认。确认完成切换到一次性密码阶段时会重新建立 modal 并聚焦“我已保存”。
 - 搜索框焦点断言同时要求 outline 颜色非透明且 outline 宽度大于 0；没有只检查 `outlineStyle`，避免透明 outline 假阳性。
 
 ## 完整验证
@@ -88,7 +91,7 @@ E2E 由管理员通过真实 API 创建专用普通用户，管理员真实退�
 
 | 门禁 | 结果 |
 |---|---|
-| `npm test` | 单元 8 files / 32 tests；集成 10 files / 55 tests，全部通过 |
+| `npm test` | 单元 8 files / 32 tests；集成 11 files / 56 tests，全部通过 |
 | `npm run test:e2e` | 14 tests 全部通过；管理员与认证文件并行运行无共享用户污染 |
 | `npm run lint` | 通过，0 错误 |
 | `npm run typecheck` | 通过，0 错误 |
@@ -100,11 +103,13 @@ E2E 由管理员通过真实 API 创建专用普通用户，管理员真实退�
 - 新建 `e2e/admin-users.spec.ts`
 - 新建 `src/app/(protected)/admin/layout.tsx`
 - 新建 `src/app/(protected)/admin/users/page.tsx`
+- 新建 `src/app/(protected)/admin/users/page.integration.test.ts`
 - 新建 `src/app/forbidden.tsx`
 - 新建 `src/components/admin/user-list.tsx`
 - 新建 `src/components/admin/user-form-dialog.tsx`
 - 新建 `src/components/admin/reset-password-dialog.tsx`
 - 新建 `src/components/ui/status-badge.tsx`
+- 新建 `src/components/ui/modal-dialog.tsx`
 - 修改 `src/components/app-shell.tsx`
 - 修改 `src/app/(protected)/layout.tsx`
 - 修改 `src/lib/api-client.ts`
@@ -114,7 +119,7 @@ E2E 由管理员通过真实 API 创建专用普通用户，管理员真实退�
 
 ## 自审
 
-- 权限：页面的第二层管理员 guard 位于服务器 layout；普通用户实际得到 403，而非仅隐藏按钮。
+- 权限：layout 与实际读取用户数据的 page 都在服务器独立执行管理员 guard；page 在查询前拒绝普通用户并进入规范 forbidden boundary，而非仅隐藏按钮。
 - API：客户端没有 Prisma 访问；所有写操作使用既有 API envelope，失败不伪装成功。
 - 并发：编辑 payload 取打开对话框时的 `user.version`；冲突不 merge 陈旧输入。
 - 密码：未新增密码日志、storage、URL 或持久化；E2E 产物捕获保持关闭。
@@ -123,8 +128,17 @@ E2E 由管理员通过真实 API 创建专用普通用户，管理员真实退�
 - 测试质量：真实 UI 登录、真实 PostgreSQL、真实 API；除制造服务端并发更新外未 route mock 管理接口。焦点检查验证可见颜色和正宽度。
 - 变异检查：删除管理员 guard、version、确认步骤、状态映射、搜索/分页 fetch、密码卸载或 focus-visible 颜色，至少会使一个 E2E 断言失败。
 
+## 独立审查与修复闭环
+
+独立 reviewer 对 `ba24437..44ae37c` 做只读审查，结论为 0 Critical、4 Important、1 Minor。所有 finding 均已处理：
+
+1. 新增真实 PostgreSQL page 集成测试。旧 page 在普通用户真实 Session 下返回 200（RED）；page 独立 `requireAdmin()` 后先返回 403，再进一步要求进入 `NEXT_HTTP_ERROR_FALLBACK;403` forbidden boundary，避免未处理授权异常日志，最终 GREEN。
+2. 临时密码保留测试不再把秘密作为 matcher 参数，只断言页面内计算的 booleans。
+3. 新增共享可访问 modal：初始焦点、Tab/Shift+Tab 圈定、Escape、触发器焦点恢复；键盘 E2E 旧实现准确 RED（取消按钮未获焦），新实现 GREEN。
+4. 满页创建测试旧实现准确 RED（搜索仍为空，证明本地 prepend 保留陈旧 cursor）；创建后改为真实 API 搜索新用户、清空 cursor/history，GREEN。翻页 history 也只在请求成功后提交，处理 Minor。
+
 ## 顾虑与后续观察
 
 - 中文 HTTP 403 依赖 Next 16 的 `experimental.authInterrupts`；当前版本构建与浏览器验证均通过，但升级 Next 时需复核该 API 是否转为稳定或发生约定变化。
-- 对话框为轻量自建语义 modal，关键操作与焦点可见性已经验证；若后续界面复杂度上升，可再引入统一焦点圈定/焦点恢复组件，本任务不扩展依赖。
+- 对话框使用本地共享 modal primitive，已覆盖初始焦点、焦点圈定、Escape 和焦点恢复；若未来引入嵌套 modal 或 portal 层级，再扩展统一 primitive，本任务不增加依赖。
 - 本机 D 盘运行 Next dev 偶尔报告 slow filesystem 警告；不影响测试结果，也不属于产品代码问题。

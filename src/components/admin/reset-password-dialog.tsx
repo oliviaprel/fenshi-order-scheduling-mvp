@@ -6,6 +6,7 @@ import {
   resetAdminUserPassword,
   type ManagedUserDto,
 } from "../../lib/api-client";
+import { ModalDialog } from "../ui/modal-dialog";
 
 export function ResetPasswordDialog({
   user,
@@ -42,13 +43,12 @@ export function ResetPasswordDialog({
   }
 
   return (
-    <div className="dialog-backdrop" role="presentation">
-      <section
-        className="admin-dialog"
+    <ModalDialog
+        key={temporaryPassword === null ? "reset-confirmation" : "reset-secret"}
         role={temporaryPassword === null ? "alertdialog" : "dialog"}
-        aria-modal="true"
-        aria-labelledby="reset-password-title"
-      >
+        labelledBy="reset-password-title"
+        onDismiss={closeAndForget}
+    >
         {temporaryPassword === null ? (
           <>
             <h2 id="reset-password-title">确认重置{user.displayName}的密码吗？</h2>
@@ -72,7 +72,6 @@ export function ResetPasswordDialog({
             </div>
           </>
         )}
-      </section>
-    </div>
+    </ModalDialog>
   );
 }

@@ -30,15 +30,19 @@ async function expectVisibleKeyboardFocus(page: Page, label: string): Promise<vo
 }
 
 async function expectSecretForgotten(page: Page, secret: string, consoleMessages: string[]) {
-  await expect(page.locator("body")).not.toContainText(secret);
-  expect(page.url()).not.toContain(secret);
-  const browserStorage = await page.evaluate(() => ({
-    local: JSON.stringify(localStorage),
-    session: JSON.stringify(sessionStorage),
-  }));
-  expect(browserStorage.local).not.toContain(secret);
-  expect(browserStorage.session).not.toContain(secret);
-  expect(consoleMessages.join("\n")).not.toContain(secret);
+  const retention = await page.evaluate((temporaryPassword) => ({
+    dom: document.body.textContent?.includes(temporaryPassword) ?? false,
+    url: window.location.href.includes(temporaryPassword),
+    localStorage: JSON.stringify(localStorage).includes(temporaryPassword),
+    sessionStorage: JSON.stringify(sessionStorage).includes(temporaryPassword),
+  }), secret);
+  expect(retention).toEqual({
+    dom: false,
+    url: false,
+    localStorage: false,
+    sessionStorage: false,
+  });
+  expect(consoleMessages.some((message) => message.includes(secret))).toBe(false);
 }
 
 async function runCompleteManagementFlow(
@@ -61,6 +65,7 @@ async function runCompleteManagementFlow(
   await page.getByLabel("手机号").fill(identity.phone);
   await page.getByRole("button", { name: "确认创建" }).click();
   await expect(page.getByText("临时密码仅显示一次")).toBeVisible();
+  await expect(page.getByRole("button", { name: "我已保存" })).toBeFocused();
   const createdPassword = (await page.getByLabel("临时密码", { exact: true }).textContent()) ?? "";
   expect(createdPassword.length).toBeGreaterThanOrEqual(16);
   await page.getByRole("button", { name: "我已保存" }).click();
@@ -83,18 +88,39 @@ async function runCompleteManagementFlow(
   await page.getByRole("button", { name: "保存修改" }).click();
   await expect(page.getByRole(recordRole, { name: new RegExp(`${identity.displayName}.*已暂停`) })).toBeVisible();
 
-  await page.getByRole("button", { name: `重置${identity.displayName}密码` }).click();
+  const resetButton = page.getByRole("button", { name: `重置${identity.displayName}密码` });
+  await resetButton.focus();
+  await page.keyboard.press("Enter");
   await expect(page.getByText(`确认重置${identity.displayName}的密码吗？`)).toBeVisible();
-  await page.getByRole("button", { name: "确认重置" }).click();
+  const resetCancel = page.getByRole("button", { name: "取消" });
+  await expect(resetCancel).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.getByRole("button", { name: "确认重置" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByText(`确认重置${identity.displayName}的密码吗？`)).not.toBeVisible();
+  await expect(resetButton).toBeFocused();
+
+  await page.keyboard.press("Enter");
+  await expect(resetCancel).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "确认重置" })).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(page.getByText("临时密码仅显示一次")).toBeVisible();
+  await expect(page.getByRole("button", { name: "我已保存" })).toBeFocused();
   const resetPassword = (await page.getByLabel("临时密码", { exact: true }).textContent()) ?? "";
   expect(resetPassword.length).toBeGreaterThanOrEqual(16);
   await page.getByRole("button", { name: "我已保存" }).click();
   await expectSecretForgotten(page, resetPassword, consoleMessages);
 
-  await page.getByRole("button", { name: `禁用${identity.displayName}` }).click();
+  const disableButton = page.getByRole("button", { name: `禁用${identity.displayName}` });
+  await disableButton.focus();
+  await page.keyboard.press("Enter");
   await expect(page.getByText(`确认禁用${identity.displayName}吗？`)).toBeVisible();
-  await page.getByRole("button", { name: "确认禁用" }).click();
+  const disableCancel = page.getByRole("button", { name: "取消" });
+  await expect(disableCancel).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.getByRole("button", { name: "确认禁用" })).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(page.getByRole(recordRole, { name: new RegExp(`${identity.displayName}.*已禁用`) })).toBeVisible();
 
   await expectNoHorizontalOverflow(page);
@@ -142,6 +168,18 @@ test.describe.serial("administrator user management", () => {
     expect((await nextResponse).status()).toBe(200);
     const secondNames = await page.locator(".desktop-user-table tbody th").allTextContents();
     expect(secondNames).not.toEqual(firstNames);
+
+    await page.getByRole("button", { name: "上一页" }).click();
+    await expect(page.locator(".desktop-user-table tbody tr")).toHaveCount(10);
+    await page.getByRole("button", { name: "新增用户" }).click();
+    await page.getByLabel("账户名称").fill("满页新增用户");
+    await page.getByLabel("手机号").fill("13500135999");
+    await page.getByRole("button", { name: "确认创建" }).click();
+    await expect(page.getByText("临时密码仅显示一次")).toBeVisible();
+    await page.getByRole("button", { name: "我已保存" }).click();
+    await expect(page.getByLabel("搜索用户")).toHaveValue("满页新增用户");
+    await expect(page.getByRole("rowheader", { name: "满页新增用户" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "下一页" })).toBeDisabled();
   });
 
   test("a stale edit shows the refresh message and never overwrites server data", async ({ page }) => {

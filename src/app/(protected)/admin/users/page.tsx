@@ -1,9 +1,20 @@
+import { forbidden } from "next/navigation";
 import { UserList } from "../../../../components/admin/user-list";
 import { listManagedUsers } from "../../../../modules/users/admin-user.service";
+import { requireAdmin } from "../../../../server/auth/guards";
+import { ApiError } from "../../../../server/http/api-error";
 
 const PAGE_SIZE = 10;
 
 export default async function AdminUsersPage() {
+  try {
+    await requireAdmin();
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "ADMIN_REQUIRED") {
+      forbidden();
+    }
+    throw error;
+  }
   const initial = await listManagedUsers({ limit: PAGE_SIZE });
   const initialData = {
     items: initial.items.map((user) => ({

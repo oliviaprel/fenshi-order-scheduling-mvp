@@ -7,11 +7,12 @@ import {
   updateAdminUser,
   type ManagedUserDto,
 } from "../../lib/api-client";
+import { ModalDialog } from "../ui/modal-dialog";
 
 type UserFormDialogProps = {
   user: ManagedUserDto | null;
   onClose: () => void;
-  onSaved: (user: ManagedUserDto) => void;
+  onSaved: (user: ManagedUserDto) => void | Promise<void>;
   onRefresh: () => Promise<void>;
 };
 
@@ -50,7 +51,7 @@ export function UserFormDialog({ user, onClose, onSaved, onRefresh }: Readonly<U
     setError(null);
     try {
       const updated = await updateAdminUser(user.id, input);
-      onSaved(updated);
+      await onSaved(updated);
       closeAndForget();
     } catch (caught) {
       setPendingDisabledInput(null);
@@ -90,7 +91,7 @@ export function UserFormDialog({ user, onClose, onSaved, onRefresh }: Readonly<U
     setError(null);
     try {
       const created = await createAdminUser(input);
-      onSaved(created.user);
+      await onSaved(created.user);
       setTemporaryPassword(created.temporaryPassword);
     } catch (caught) {
       setError(caught instanceof ApiClientError ? caught.message : "创建失败，请稍后重试");
@@ -101,8 +102,7 @@ export function UserFormDialog({ user, onClose, onSaved, onRefresh }: Readonly<U
 
   if (temporaryPassword !== null) {
     return (
-      <div className="dialog-backdrop" role="presentation">
-        <section className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="password-title">
+      <ModalDialog key="created-secret" labelledBy="password-title" onDismiss={closeAndForget}>
           <p className="eyebrow">安全信息</p>
           <h2 id="password-title">临时密码仅显示一次</h2>
           <p>请立即通过安全方式交给用户，关闭后无法再次查看。</p>
@@ -110,29 +110,25 @@ export function UserFormDialog({ user, onClose, onSaved, onRefresh }: Readonly<U
           <div className="dialog-actions">
             <button className="primary-button" type="button" onClick={closeAndForget}>我已保存</button>
           </div>
-        </section>
-      </div>
+      </ModalDialog>
     );
   }
 
   if (pendingDisabledInput !== null) {
     return (
-      <div className="dialog-backdrop" role="presentation">
-        <section className="admin-dialog" role="alertdialog" aria-modal="true" aria-labelledby="disable-from-edit-title">
+      <ModalDialog key="edit-disable-confirmation" role="alertdialog" labelledBy="disable-from-edit-title" onDismiss={() => setPendingDisabledInput(null)}>
           <h2 id="disable-from-edit-title">确认禁用{pendingDisabledInput.displayName}吗？</h2>
           <p>禁用后，该用户的所有现有登录会话会立即失效。</p>
           <div className="dialog-actions">
             <button className="secondary-button" type="button" onClick={() => setPendingDisabledInput(null)}>取消</button>
             <button className="danger-button" type="button" disabled={isSubmitting} onClick={() => void saveEdit(pendingDisabledInput)}>确认禁用</button>
           </div>
-        </section>
-      </div>
+      </ModalDialog>
     );
   }
 
   return (
-    <div className="dialog-backdrop" role="presentation">
-      <section className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="user-form-title">
+    <ModalDialog key="user-form" labelledBy="user-form-title" onDismiss={closeAndForget}>
         <p className="eyebrow">{isEditing ? "账户资料" : "创建账户"}</p>
         <h2 id="user-form-title">{isEditing ? `编辑${user.displayName}` : "新增用户"}</h2>
         {error === null ? null : (
@@ -169,7 +165,6 @@ export function UserFormDialog({ user, onClose, onSaved, onRefresh }: Readonly<U
             </button>
           </div>
         </form>
-      </section>
-    </div>
+    </ModalDialog>
   );
 }

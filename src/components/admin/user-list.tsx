@@ -9,6 +9,7 @@ import {
   type ManagedUserList,
 } from "../../lib/api-client";
 import { StatusBadge } from "../ui/status-badge";
+import { ModalDialog } from "../ui/modal-dialog";
 import { ResetPasswordDialog } from "./reset-password-dialog";
 import { UserFormDialog } from "./user-form-dialog";
 
@@ -36,7 +37,7 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  async function load(nextQuery: string, cursor: string | null) {
+  async function load(nextQuery: string, cursor: string | null): Promise<boolean> {
     setIsLoading(true);
     setError(null);
     try {
@@ -48,8 +49,10 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
       setData(result);
       setActiveQuery(nextQuery);
       setCurrentCursor(cursor);
+      return true;
     } catch (caught) {
       setError(caught instanceof ApiClientError ? caught.message : "加载失败，请稍后重试");
+      return false;
     } finally {
       setIsLoading(false);
     }
@@ -61,22 +64,23 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setCursorHistory([]);
-    await load(query.trim(), null);
+    if (await load(query.trim(), null)) setCursorHistory([]);
   }
 
   async function handleNext() {
     if (data.nextCursor === null) return;
     const nextCursor = data.nextCursor;
-    setCursorHistory((history) => [...history, currentCursor]);
-    await load(activeQuery, nextCursor);
+    if (await load(activeQuery, nextCursor)) {
+      setCursorHistory((history) => [...history, currentCursor]);
+    }
   }
 
   async function handlePrevious() {
     const previousCursor = cursorHistory.at(-1);
     if (previousCursor === undefined) return;
-    setCursorHistory((history) => history.slice(0, -1));
-    await load(activeQuery, previousCursor);
+    if (await load(activeQuery, previousCursor)) {
+      setCursorHistory((history) => history.slice(0, -1));
+    }
   }
 
   function mergeUser(user: ManagedUserDto) {
@@ -89,6 +93,16 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
           : [user, ...current.items].slice(0, PAGE_SIZE),
       };
     });
+  }
+
+  async function handleSavedUser(user: ManagedUserDto) {
+    if (editingUser === null) {
+      setQuery(user.displayName);
+      setCursorHistory([]);
+      await load(user.displayName, null);
+      return;
+    }
+    mergeUser(user);
   }
 
   async function disableUser(user: ManagedUserDto) {
@@ -180,7 +194,7 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
         <UserFormDialog
           user={editingUser}
           onClose={() => setEditingUser(undefined)}
-          onSaved={mergeUser}
+          onSaved={handleSavedUser}
           onRefresh={refreshCurrent}
         />
       )}
@@ -188,16 +202,14 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
         <ResetPasswordDialog user={resetUser} onClose={() => setResetUser(null)} onReset={refreshCurrent} />
       )}
       {confirmation === null ? null : (
-        <div className="dialog-backdrop" role="presentation">
-          <section className="admin-dialog" role="alertdialog" aria-modal="true" aria-labelledby="disable-title">
+        <ModalDialog role="alertdialog" labelledBy="disable-title" onDismiss={() => setConfirmation(null)}>
             <h2 id="disable-title">确认禁用{confirmation.user.displayName}吗？</h2>
             <p>禁用后，该用户的所有现有登录会话会立即失效。</p>
             <div className="dialog-actions">
               <button className="secondary-button" type="button" onClick={() => setConfirmation(null)}>取消</button>
               <button className="danger-button" type="button" disabled={isLoading} onClick={() => void disableUser(confirmation.user)}>确认禁用</button>
             </div>
-          </section>
-        </div>
+        </ModalDialog>
       )}
     </>
   );
