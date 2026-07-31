@@ -98,8 +98,7 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
   async function handleSavedUser(user: ManagedUserDto) {
     if (editingUser === null) {
       setQuery(user.displayName);
-      setCursorHistory([]);
-      await load(user.displayName, null);
+      if (await load(user.displayName, null)) setCursorHistory([]);
       return;
     }
     mergeUser(user);
@@ -202,11 +201,11 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
         <ResetPasswordDialog user={resetUser} onClose={() => setResetUser(null)} onReset={refreshCurrent} />
       )}
       {confirmation === null ? null : (
-        <ModalDialog role="alertdialog" labelledBy="disable-title" onDismiss={() => setConfirmation(null)}>
+        <ModalDialog role="alertdialog" labelledBy="disable-title" onDismiss={() => setConfirmation(null)} dismissible={!isLoading}>
             <h2 id="disable-title">确认禁用{confirmation.user.displayName}吗？</h2>
             <p>禁用后，该用户的所有现有登录会话会立即失效。</p>
             <div className="dialog-actions">
-              <button className="secondary-button" type="button" onClick={() => setConfirmation(null)}>取消</button>
+              <button className="secondary-button" type="button" disabled={isLoading} onClick={() => setConfirmation(null)}>取消</button>
               <button className="danger-button" type="button" disabled={isLoading} onClick={() => void disableUser(confirmation.user)}>确认禁用</button>
             </div>
         </ModalDialog>

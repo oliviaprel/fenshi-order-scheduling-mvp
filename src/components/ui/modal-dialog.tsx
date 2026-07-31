@@ -14,20 +14,24 @@ const FOCUSABLE = [
 export function ModalDialog({
   labelledBy,
   onDismiss,
+  dismissible = true,
   role = "dialog",
   children,
 }: Readonly<{
   labelledBy: string;
   onDismiss: () => void;
+  dismissible?: boolean;
   role?: "dialog" | "alertdialog";
   children: React.ReactNode;
 }>) {
   const dialogRef = useRef<HTMLElement>(null);
   const dismissRef = useRef(onDismiss);
+  const dismissibleRef = useRef(dismissible);
 
   useEffect(() => {
     dismissRef.current = onDismiss;
-  }, [onDismiss]);
+    dismissibleRef.current = dismissible;
+  }, [dismissible, onDismiss]);
 
   useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement
@@ -45,7 +49,7 @@ export function ModalDialog({
   function handleKeyDown(event: React.KeyboardEvent<HTMLElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
-      dismissRef.current();
+      if (dismissibleRef.current) dismissRef.current();
       return;
     }
     if (event.key !== "Tab") return;

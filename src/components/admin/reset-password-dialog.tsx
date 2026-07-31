@@ -48,6 +48,7 @@ export function ResetPasswordDialog({
         role={temporaryPassword === null ? "alertdialog" : "dialog"}
         labelledBy="reset-password-title"
         onDismiss={closeAndForget}
+        dismissible={!isSubmitting}
     >
         {temporaryPassword === null ? (
           <>
@@ -55,7 +56,7 @@ export function ResetPasswordDialog({
             <p>确认后旧密码和现有登录会话将立即失效。</p>
             {error === null ? null : <div className="error-summary" role="alert">{error}</div>}
             <div className="dialog-actions">
-              <button className="secondary-button" type="button" onClick={closeAndForget}>取消</button>
+              <button className="secondary-button" type="button" disabled={isSubmitting} onClick={closeAndForget}>取消</button>
               <button className="primary-button" type="button" disabled={isSubmitting} onClick={() => void handleReset()}>
                 {isSubmitting ? "重置中…" : "确认重置"}
               </button>

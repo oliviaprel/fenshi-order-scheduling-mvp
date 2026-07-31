@@ -102,7 +102,7 @@ export function UserFormDialog({ user, onClose, onSaved, onRefresh }: Readonly<U
 
   if (temporaryPassword !== null) {
     return (
-      <ModalDialog key="created-secret" labelledBy="password-title" onDismiss={closeAndForget}>
+      <ModalDialog key="created-secret" labelledBy="password-title" onDismiss={closeAndForget} dismissible={!isSubmitting}>
           <p className="eyebrow">安全信息</p>
           <h2 id="password-title">临时密码仅显示一次</h2>
           <p>请立即通过安全方式交给用户，关闭后无法再次查看。</p>
@@ -116,11 +116,11 @@ export function UserFormDialog({ user, onClose, onSaved, onRefresh }: Readonly<U
 
   if (pendingDisabledInput !== null) {
     return (
-      <ModalDialog key="edit-disable-confirmation" role="alertdialog" labelledBy="disable-from-edit-title" onDismiss={() => setPendingDisabledInput(null)}>
+      <ModalDialog key="edit-disable-confirmation" role="alertdialog" labelledBy="disable-from-edit-title" onDismiss={() => setPendingDisabledInput(null)} dismissible={!isSubmitting}>
           <h2 id="disable-from-edit-title">确认禁用{pendingDisabledInput.displayName}吗？</h2>
           <p>禁用后，该用户的所有现有登录会话会立即失效。</p>
           <div className="dialog-actions">
-            <button className="secondary-button" type="button" onClick={() => setPendingDisabledInput(null)}>取消</button>
+            <button className="secondary-button" type="button" disabled={isSubmitting} onClick={() => setPendingDisabledInput(null)}>取消</button>
             <button className="danger-button" type="button" disabled={isSubmitting} onClick={() => void saveEdit(pendingDisabledInput)}>确认禁用</button>
           </div>
       </ModalDialog>
@@ -128,7 +128,7 @@ export function UserFormDialog({ user, onClose, onSaved, onRefresh }: Readonly<U
   }
 
   return (
-    <ModalDialog key="user-form" labelledBy="user-form-title" onDismiss={closeAndForget}>
+    <ModalDialog key="user-form" labelledBy="user-form-title" onDismiss={closeAndForget} dismissible={!isSubmitting}>
         <p className="eyebrow">{isEditing ? "账户资料" : "创建账户"}</p>
         <h2 id="user-form-title">{isEditing ? `编辑${user.displayName}` : "新增用户"}</h2>
         {error === null ? null : (
@@ -159,7 +159,7 @@ export function UserFormDialog({ user, onClose, onSaved, onRefresh }: Readonly<U
             </div>
           )}
           <div className="dialog-actions">
-            <button className="secondary-button" type="button" onClick={closeAndForget}>取消</button>
+            <button className="secondary-button" type="button" disabled={isSubmitting} onClick={closeAndForget}>取消</button>
             <button className="primary-button" type="submit" disabled={isSubmitting}>
               {isSubmitting ? "提交中…" : isEditing ? "保存修改" : "确认创建"}
             </button>

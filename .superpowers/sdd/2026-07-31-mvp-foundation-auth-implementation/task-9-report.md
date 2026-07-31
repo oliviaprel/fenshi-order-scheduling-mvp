@@ -136,6 +136,7 @@ E2E 由管理员通过真实 API 创建专用普通用户，管理员真实退�
 2. 临时密码保留测试不再把秘密作为 matcher 参数，只断言页面内计算的 booleans。
 3. 新增共享可访问 modal：初始焦点、Tab/Shift+Tab 圈定、Escape、触发器焦点恢复；键盘 E2E 旧实现准确 RED（取消按钮未获焦），新实现 GREEN。
 4. 满页创建测试旧实现准确 RED（搜索仍为空，证明本地 prepend 保留陈旧 cursor）；创建后改为真实 API 搜索新用户、清空 cursor/history，GREEN。翻页 history 也只在请求成功后提交，处理 Minor。
+5. 原 reviewer 复核确认上述问题已关闭，同时发现 secret-producing POST pending 时仍可取消的新 Important。E2E 仅延迟后继续真实创建/重置请求；旧实现 RED（pending 时取消未禁用），修复后 Escape 不关闭、取消禁用，响应到达后仍强制展示一次性密码，GREEN。复核提出的创建后 history Minor 也改为只在权威 GET 成功后清空。
 
 ## 顾虑与后续观察
 

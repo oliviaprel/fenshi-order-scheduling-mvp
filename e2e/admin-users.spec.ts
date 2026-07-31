@@ -63,7 +63,27 @@ async function runCompleteManagementFlow(
   await page.keyboard.press("Enter");
   await page.getByLabel("账户名称").fill(identity.displayName);
   await page.getByLabel("手机号").fill(identity.phone);
+  let releaseCreate: (() => void) | undefined;
+  if (viewport.width === 390) {
+    const createGate = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    await page.route("**/api/admin/users", async (route) => {
+      await createGate;
+      await route.continue();
+    }, { times: 1 });
+  }
   await page.getByRole("button", { name: "确认创建" }).click();
+  if (releaseCreate !== undefined) {
+    await expect(page.getByRole("button", { name: "提交中…" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    const pendingCreate = {
+      dialogVisible: await page.getByRole("dialog", { name: "新增用户" }).isVisible(),
+      cancelDisabled: await page.getByRole("button", { name: "取消" }).isDisabled(),
+    };
+    releaseCreate();
+    expect(pendingCreate).toEqual({ dialogVisible: true, cancelDisabled: true });
+  }
   await expect(page.getByText("临时密码仅显示一次")).toBeVisible();
   await expect(page.getByRole("button", { name: "我已保存" })).toBeFocused();
   const createdPassword = (await page.getByLabel("临时密码", { exact: true }).textContent()) ?? "";
@@ -104,7 +124,27 @@ async function runCompleteManagementFlow(
   await expect(resetCancel).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "确认重置" })).toBeFocused();
+  let releaseReset: (() => void) | undefined;
+  if (viewport.width === 390) {
+    const resetGate = new Promise<void>((resolve) => {
+      releaseReset = resolve;
+    });
+    await page.route("**/api/admin/users/*/reset-password", async (route) => {
+      await resetGate;
+      await route.continue();
+    }, { times: 1 });
+  }
   await page.keyboard.press("Enter");
+  if (releaseReset !== undefined) {
+    await expect(page.getByRole("button", { name: "重置中…" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    const pendingReset = {
+      dialogVisible: await page.getByRole("alertdialog").isVisible(),
+      cancelDisabled: await page.getByRole("button", { name: "取消" }).isDisabled(),
+    };
+    releaseReset();
+    expect(pendingReset).toEqual({ dialogVisible: true, cancelDisabled: true });
+  }
   await expect(page.getByText("临时密码仅显示一次")).toBeVisible();
   await expect(page.getByRole("button", { name: "我已保存" })).toBeFocused();
   const resetPassword = (await page.getByLabel("临时密码", { exact: true }).textContent()) ?? "";
