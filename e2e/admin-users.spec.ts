@@ -58,7 +58,7 @@ async function runCompleteManagementFlow(
   await expect(page.getByRole("heading", { name: "用户管理" })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
-  const createButton = page.getByRole("button", { name: "新增用户" });
+  const createButton = page.getByRole("button", { name: "新增用户", exact: true });
   await createButton.focus();
   await page.keyboard.press("Enter");
   await page.getByLabel("账户名称").fill(identity.displayName);
@@ -162,6 +162,7 @@ async function runCompleteManagementFlow(
   await expect(page.getByRole("button", { name: "确认禁用" })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.getByRole(recordRole, { name: new RegExp(`${identity.displayName}.*已禁用`) })).toBeVisible();
+  await expect(page.getByRole("button", { name: `编辑${identity.displayName}` })).toBeFocused();
 
   await expectNoHorizontalOverflow(page);
   await expectVisibleKeyboardFocus(page, "搜索用户");
@@ -211,15 +212,129 @@ test.describe.serial("administrator user management", () => {
 
     await page.getByRole("button", { name: "上一页" }).click();
     await expect(page.locator(".desktop-user-table tbody tr")).toHaveCount(10);
-    await page.getByRole("button", { name: "新增用户" }).click();
+    await page.getByRole("button", { name: "新增用户", exact: true }).click();
     await page.getByLabel("账户名称").fill("满页新增用户");
     await page.getByLabel("手机号").fill("13500135999");
+    const authoritativePage = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        response.url().includes("/api/admin/users?") &&
+        !response.url().includes("query="),
+    );
     await page.getByRole("button", { name: "确认创建" }).click();
     await expect(page.getByText("临时密码仅显示一次")).toBeVisible();
     await page.getByRole("button", { name: "我已保存" }).click();
-    await expect(page.getByLabel("搜索用户")).toHaveValue("满页新增用户");
-    await expect(page.getByRole("rowheader", { name: "满页新增用户" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "下一页" })).toBeDisabled();
+    const authoritativeBody = (await authoritativePage).json() as Promise<{
+      items: Array<{ displayName: string }>;
+      nextCursor: string | null;
+    }>;
+    const authoritative = await authoritativeBody;
+    await expect(page.getByLabel("搜索用户")).toHaveValue("");
+    expect(await page.locator(".desktop-user-table tbody th").allTextContents()).toEqual(
+      authoritative.items.map((user) => user.displayName),
+    );
+    if (authoritative.nextCursor === null) {
+      await expect(page.getByRole("button", { name: "下一页" })).toBeDisabled();
+    } else {
+      await expect(page.getByRole("button", { name: "下一页" })).toBeEnabled();
+    }
+  });
+
+  test("creating preserves the active filter and commits refreshed state atomically", async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto("/admin/users");
+    await page.getByLabel("搜索用户").fill("测试操作员");
+    await page.getByRole("button", { name: "搜索" }).click();
+    await expect(page.getByRole("rowheader", { name: "测试操作员" })).toBeVisible();
+
+    const successfulRefresh = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        response.url().includes("query=%E6%B5%8B%E8%AF%95%E6%93%8D%E4%BD%9C%E5%91%98"),
+    );
+    await page.getByRole("button", { name: "新增用户", exact: true }).click();
+    await page.getByLabel("账户名称").fill("筛选外新增用户");
+    await page.getByLabel("手机号").fill("13600136101");
+    await page.getByRole("button", { name: "确认创建" }).click();
+    expect((await successfulRefresh).status()).toBe(200);
+    await page.getByRole("button", { name: "我已保存" }).click();
+    await expect(page.getByLabel("搜索用户")).toHaveValue("测试操作员");
+    await expect(page.getByRole("rowheader", { name: "测试操作员" })).toBeVisible();
+    await expect(page.getByText("筛选外新增用户")).not.toBeVisible();
+
+    const beforeNames = await page.locator(".desktop-user-table tbody th").allTextContents();
+    const previousDisabled = await page.getByRole("button", { name: "上一页" }).isDisabled();
+    const nextDisabled = await page.getByRole("button", { name: "下一页" }).isDisabled();
+    await page.route("**/api/admin/users?*", (route) => route.abort("failed"), { times: 1 });
+    await page.getByRole("button", { name: "新增用户", exact: true }).click();
+    await page.getByLabel("账户名称").fill("刷新失败新增用户");
+    await page.getByLabel("手机号").fill("13600136102");
+    await page.getByRole("button", { name: "确认创建" }).click();
+    await expect(page.getByText("临时密码仅显示一次")).toBeVisible();
+    await page.getByRole("button", { name: "我已保存" }).click();
+
+    await expect(page.getByLabel("搜索用户")).toHaveValue("测试操作员");
+    expect(await page.locator(".desktop-user-table tbody th").allTextContents()).toEqual(beforeNames);
+    expect(await page.getByRole("button", { name: "上一页" }).isDisabled()).toBe(previousDisabled);
+    expect(await page.getByRole("button", { name: "下一页" }).isDisabled()).toBe(nextDisabled);
+    await expect(page.getByRole("alert").filter({ hasText: "加载失败" })).toBeVisible();
+  });
+
+  test("editing a user out of the active filter removes it through an authoritative refresh", async ({ page }) => {
+    await loginAsAdmin(page);
+    const createResponse = await page.request.post("/api/admin/users", {
+      data: { displayName: "编辑筛选用户", phone: "13600136103" },
+      headers: { origin: APP_ORIGIN },
+    });
+    expect(createResponse.status()).toBe(201);
+    await page.goto("/admin/users");
+    await page.getByLabel("搜索用户").fill("编辑筛选用户");
+    await page.getByRole("button", { name: "搜索" }).click();
+    await page.getByRole("button", { name: "编辑编辑筛选用户" }).click();
+    await page.getByLabel("账户名称").fill("已移出筛选用户");
+    const refreshedList = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        response.url().includes("query=%E7%BC%96%E8%BE%91%E7%AD%9B%E9%80%89%E7%94%A8%E6%88%B7"),
+    );
+    await page.getByRole("button", { name: "保存修改" }).click();
+    expect((await refreshedList).status()).toBe(200);
+    await expect(page.getByRole("heading", { name: "没有找到用户" })).toBeVisible();
+    await expect(page.getByText("已移出筛选用户")).not.toBeVisible();
+  });
+
+  test("an independent disable conflict closes the modal and focuses an actionable refresh", async ({ page }) => {
+    await loginAsAdmin(page);
+    const createResponse = await page.request.post("/api/admin/users", {
+      data: { displayName: "禁用冲突用户", phone: "13600136104" },
+      headers: { origin: APP_ORIGIN },
+    });
+    expect(createResponse.status()).toBe(201);
+    const created = (await createResponse.json()) as {
+      user: { id: string; displayName: string; phone: string; version: number };
+    };
+    await page.goto("/admin/users");
+    await page.getByLabel("搜索用户").fill(created.user.displayName);
+    await page.getByRole("button", { name: "搜索" }).click();
+    await page.getByRole("button", { name: `禁用${created.user.displayName}` }).click();
+
+    const concurrentResponse = await page.request.patch(`/api/admin/users/${created.user.id}`, {
+      data: {
+        displayName: created.user.displayName,
+        phone: created.user.phone,
+        status: "PAUSED",
+        version: created.user.version,
+      },
+      headers: { origin: APP_ORIGIN },
+    });
+    expect(concurrentResponse.status()).toBe(200);
+    await page.getByRole("button", { name: "确认禁用" }).click();
+
+    await expect(page.getByRole("alertdialog")).not.toBeVisible();
+    const conflictAlert = page.getByRole("alert").filter({ hasText: "该用户已被其他管理员修改" });
+    await expect(conflictAlert).toBeVisible();
+    await expect(conflictAlert).toBeFocused();
+    await expect(page.getByRole("button", { name: "刷新列表" })).toBeVisible();
   });
 
   test("a stale edit shows the refresh message and never overwrites server data", async ({ page }) => {

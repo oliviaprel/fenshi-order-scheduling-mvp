@@ -92,7 +92,7 @@ E2E 由管理员通过真实 API 创建专用普通用户，管理员真实退�
 | 门禁 | 结果 |
 |---|---|
 | `npm test` | 单元 8 files / 32 tests；集成 11 files / 56 tests，全部通过 |
-| `npm run test:e2e` | 14 tests 全部通过；管理员与认证文件并行运行无共享用户污染 |
+| `npm run test:e2e` | 17 tests 全部通过；管理员与认证文件并行运行无共享用户污染 |
 | `npm run lint` | 通过，0 错误 |
 | `npm run typecheck` | 通过，0 错误 |
 | `npm run build` | Next.js 16.2.12 生产构建成功；`/admin/users` 为动态服务端路由 |
@@ -137,6 +137,17 @@ E2E 由管理员通过真实 API 创建专用普通用户，管理员真实退�
 3. 新增共享可访问 modal：初始焦点、Tab/Shift+Tab 圈定、Escape、触发器焦点恢复；键盘 E2E 旧实现准确 RED（取消按钮未获焦），新实现 GREEN。
 4. 满页创建测试旧实现准确 RED（搜索仍为空，证明本地 prepend 保留陈旧 cursor）；创建后改为真实 API 搜索新用户、清空 cursor/history，GREEN。翻页 history 也只在请求成功后提交，处理 Minor。
 5. 原 reviewer 复核确认上述问题已关闭，同时发现 secret-producing POST pending 时仍可取消的新 Important。E2E 仅延迟后继续真实创建/重置请求；旧实现 RED（pending 时取消未禁用），修复后 Escape 不关闭、取消禁用，响应到达后仍强制展示一次性密码，GREEN。复核提出的创建后 history Minor 也改为只在权威 GET 成功后清空。
+
+### 主流程审查 Fix Round 1/5
+
+主流程复核提出 4 个 Important，均先由真实浏览器行为观察 RED，再最小修复：
+
+1. **创建污染筛选与非原子刷新**：在“测试操作员”筛选下创建不匹配用户，旧实现把搜索框改成新名称；满页创建也等不到原上下文的无 query GET。修复后搜索条件保持不变，权威 GET 成功时一次提交 data/activeQuery/cursor/history。另让后续 GET 发生网络失败，确认 query、data、cursor、history 全部保持创建前值，只有可见加载错误变化。
+2. **编辑后陈旧筛选行**：把“编辑筛选用户”改名为“已移出筛选用户”，旧实现不发原 active query GET 并继续显示本地 merge 行。修复后编辑成功按当前筛选/cursor 权威重取，页面正确显示空态。
+3. **独立禁用 409 不可见**：真实第二条 PATCH 递增 version 后确认禁用，旧实现保留 alertdialog，冲突错误落在遮罩后。修复后关闭确认层，将固定 409 文案放在可见列表 alert，自动聚焦并保留“刷新列表”动作。
+4. **禁用成功焦点丢失**：旧实现尝试恢复已被删除的“禁用”按钮，焦点落到 body。修复在 DOM 提交后选择同一用户行当前可见的“编辑”按钮作为稳定逻辑后继，390/768/1440 三视口均验证。
+
+为保证这些状态不能部分提交，客户端把 `data`、`activeQuery`、`currentCursor`、`cursorHistory` 合并为单一 `listView` state；网络请求只返回候选结果，各操作仅在成功后一次提交新 view。
 
 ## 顾虑与后续观察
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   ApiClientError,
   listAdminUsers,
@@ -25,83 +25,122 @@ function formatDate(value: string): string {
 
 type Confirmation = { kind: "disable"; user: ManagedUserDto } | null;
 
+type ListView = {
+  data: ManagedUserList;
+  activeQuery: string;
+  currentCursor: string | null;
+  cursorHistory: Array<string | null>;
+};
+
 export function UserList({ initialData }: Readonly<{ initialData: ManagedUserList }>) {
-  const [data, setData] = useState(initialData);
+  const [listView, setListView] = useState<ListView>({
+    data: initialData,
+    activeQuery: "",
+    currentCursor: null,
+    cursorHistory: [],
+  });
   const [query, setQuery] = useState("");
-  const [activeQuery, setActiveQuery] = useState("");
-  const [currentCursor, setCurrentCursor] = useState<string | null>(null);
-  const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([]);
   const [editingUser, setEditingUser] = useState<ManagedUserDto | null | undefined>(undefined);
   const [resetUser, setResetUser] = useState<ManagedUserDto | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const { data, activeQuery, currentCursor, cursorHistory } = listView;
 
-  async function load(nextQuery: string, cursor: string | null): Promise<boolean> {
+  useEffect(() => {
+    if (error !== null) errorRef.current?.focus();
+  }, [error]);
+
+  async function fetchList(nextQuery: string, cursor: string | null): Promise<ManagedUserList | null> {
     setIsLoading(true);
     setError(null);
     try {
-      const result = await listAdminUsers({
+      return await listAdminUsers({
         ...(nextQuery.length === 0 ? {} : { query: nextQuery }),
         ...(cursor === null ? {} : { cursor }),
         limit: PAGE_SIZE,
       });
-      setData(result);
-      setActiveQuery(nextQuery);
-      setCurrentCursor(cursor);
-      return true;
     } catch (caught) {
       setError(caught instanceof ApiClientError ? caught.message : "加载失败，请稍后重试");
-      return false;
+      return null;
     } finally {
       setIsLoading(false);
     }
   }
 
-  async function refreshCurrent() {
-    await load(activeQuery, currentCursor);
+  async function refreshCurrent(): Promise<boolean> {
+    const result = await fetchList(activeQuery, currentCursor);
+    if (result === null) return false;
+    setListView((current) => ({ ...current, data: result }));
+    return true;
   }
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (await load(query.trim(), null)) setCursorHistory([]);
+    const nextQuery = query.trim();
+    const result = await fetchList(nextQuery, null);
+    if (result === null) return;
+    setListView({ data: result, activeQuery: nextQuery, currentCursor: null, cursorHistory: [] });
   }
 
   async function handleNext() {
     if (data.nextCursor === null) return;
     const nextCursor = data.nextCursor;
-    if (await load(activeQuery, nextCursor)) {
-      setCursorHistory((history) => [...history, currentCursor]);
-    }
+    const result = await fetchList(activeQuery, nextCursor);
+    if (result === null) return;
+    setListView((current) => ({
+      ...current,
+      data: result,
+      currentCursor: nextCursor,
+      cursorHistory: [...current.cursorHistory, currentCursor],
+    }));
   }
 
   async function handlePrevious() {
     const previousCursor = cursorHistory.at(-1);
     if (previousCursor === undefined) return;
-    if (await load(activeQuery, previousCursor)) {
-      setCursorHistory((history) => history.slice(0, -1));
-    }
+    const result = await fetchList(activeQuery, previousCursor);
+    if (result === null) return;
+    setListView((current) => ({
+      ...current,
+      data: result,
+      currentCursor: previousCursor,
+      cursorHistory: current.cursorHistory.slice(0, -1),
+    }));
   }
 
   function mergeUser(user: ManagedUserDto) {
-    setData((current) => {
-      const existing = current.items.some((item) => item.id === user.id);
+    setListView((current) => {
+      const existing = current.data.items.some((item) => item.id === user.id);
       return {
         ...current,
-        items: existing
-          ? current.items.map((item) => (item.id === user.id ? user : item))
-          : [user, ...current.items].slice(0, PAGE_SIZE),
+        data: {
+          ...current.data,
+          items: existing
+            ? current.data.items.map((item) => (item.id === user.id ? user : item))
+            : current.data.items,
+        },
       };
     });
   }
 
-  async function handleSavedUser(user: ManagedUserDto) {
-    if (editingUser === null) {
-      setQuery(user.displayName);
-      if (await load(user.displayName, null)) setCursorHistory([]);
-      return;
-    }
-    mergeUser(user);
+  async function handleSavedUser() {
+    await refreshCurrent();
+  }
+
+  async function refreshCurrentForDialog() {
+    await refreshCurrent();
+  }
+
+  function focusVisibleEditAction(displayName: string) {
+    requestAnimationFrame(() => {
+      const editAction = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) =>
+          button.getAttribute("aria-label") === `编辑${displayName}` && button.offsetParent !== null,
+      );
+      editAction?.focus();
+    });
   }
 
   async function disableUser(user: ManagedUserDto) {
@@ -116,8 +155,10 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
       });
       mergeUser(updated);
       setConfirmation(null);
+      focusVisibleEditAction(updated.displayName);
     } catch (caught) {
       if (caught instanceof ApiClientError && caught.code === "USER_VERSION_CONFLICT") {
+        setConfirmation(null);
         setError("该用户已被其他管理员修改，请刷新后重试");
       } else {
         setError(caught instanceof ApiClientError ? caught.message : "禁用失败，请稍后重试");
@@ -149,7 +190,7 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
       </div>
 
       {error === null ? null : (
-        <div className="error-summary list-error" role="alert">
+        <div className="error-summary list-error" role="alert" tabIndex={-1} ref={errorRef}>
           <span>{error}</span>
           {error.includes("刷新") ? <button className="text-button" type="button" onClick={() => void refreshCurrent()}>刷新列表</button> : null}
         </div>
@@ -194,11 +235,11 @@ export function UserList({ initialData }: Readonly<{ initialData: ManagedUserLis
           user={editingUser}
           onClose={() => setEditingUser(undefined)}
           onSaved={handleSavedUser}
-          onRefresh={refreshCurrent}
+          onRefresh={refreshCurrentForDialog}
         />
       )}
       {resetUser === null ? null : (
-        <ResetPasswordDialog user={resetUser} onClose={() => setResetUser(null)} onReset={refreshCurrent} />
+        <ResetPasswordDialog user={resetUser} onClose={() => setResetUser(null)} onReset={refreshCurrentForDialog} />
       )}
       {confirmation === null ? null : (
         <ModalDialog role="alertdialog" labelledBy="disable-title" onDismiss={() => setConfirmation(null)} dismissible={!isLoading}>
