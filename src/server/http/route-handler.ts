@@ -41,10 +41,7 @@ export async function parseJsonBody<T>(request: Request, schema: ZodType<T>): Pr
 export async function routeHandler(request: Request, action: RouteAction): Promise<Response> {
   const requestId = getRequestId(request);
   const context: RouteContext = {
-    request:
-      request instanceof NextRequest && request.cookies !== undefined
-        ? request
-        : new NextRequest(request),
+    request: "cookies" in request ? (request as NextRequest) : new NextRequest(request),
     requestId,
   };
 
