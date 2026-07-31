@@ -9,7 +9,11 @@ export function AppShell({
   user,
 }: Readonly<{
   children: React.ReactNode;
-  user: { displayName: string; status: "ACTIVE" | "PAUSED" | "DISABLED" };
+  user: {
+    displayName: string;
+    status: "ACTIVE" | "PAUSED" | "DISABLED";
+    role: "ADMIN" | "USER";
+  };
 }>) {
   const router = useRouter();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -34,6 +38,7 @@ export function AppShell({
           <span>焚烧订单排期系统</span>
         </a>
         <div className="account-actions">
+          {user.role === "ADMIN" ? <a className="header-link" href="/admin/users">用户管理</a> : null}
           <span className="account-name">{user.displayName}</span>
           <button className="secondary-button" type="button" onClick={handleLogout} disabled={isLoggingOut}>
             {isLoggingOut ? "退出中…" : "退出登录"}

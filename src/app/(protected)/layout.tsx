@@ -18,7 +18,7 @@ export default async function ProtectedLayout({ children }: Readonly<{ children:
   }
 
   return (
-    <AppShell user={{ displayName: user.displayName, status: user.status }}>
+    <AppShell user={{ displayName: user.displayName, status: user.status, role: user.role }}>
       {children}
     </AppShell>
   );
