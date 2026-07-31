@@ -163,6 +163,85 @@ describe("administrator user management service", () => {
     expect(allTargets.items.every((item) => !("passwordHash" in item))).toBe(true);
   });
 
+  it("continues after the UUID cursor when that user no longer matches the search", async () => {
+    const firstId = "10000000-0000-4000-8000-000000000001";
+    const cursorId = "20000000-0000-4000-8000-000000000002";
+    const followingId = "30000000-0000-4000-8000-000000000003";
+    await prisma.user.createMany({
+      data: [
+        {
+          id: firstId,
+          role: "USER",
+          displayName: "匹配用户一",
+          phone: "13600136001",
+          passwordHash: "unused-list-test-hash",
+        },
+        {
+          id: cursorId,
+          role: "USER",
+          displayName: "匹配用户二",
+          phone: "13600136002",
+          passwordHash: "unused-list-test-hash",
+        },
+        {
+          id: followingId,
+          role: "USER",
+          displayName: "匹配用户三",
+          phone: "13600136003",
+          passwordHash: "unused-list-test-hash",
+        },
+      ],
+    });
+    const firstPage = await listManagedUsers({ query: "匹配用户", limit: 2 });
+    expect(firstPage.items.map((item) => item.id)).toEqual([firstId, cursorId]);
+    expect(firstPage.nextCursor).toBe(cursorId);
+
+    await prisma.user.update({
+      where: { id: cursorId },
+      data: { displayName: "不再符合条件" },
+    });
+    const secondPage = await listManagedUsers({
+      query: "匹配用户",
+      cursor: cursorId,
+      limit: 2,
+    });
+
+    expect(secondPage.items.map((item) => item.id)).toEqual([followingId]);
+    expect(secondPage.nextCursor).toBeNull();
+  });
+
+  it("continues after the UUID cursor when that user no longer exists", async () => {
+    const cursorId = "20000000-0000-4000-8000-000000000002";
+    const followingId = "30000000-0000-4000-8000-000000000003";
+    await prisma.user.createMany({
+      data: [
+        {
+          id: cursorId,
+          role: "USER",
+          displayName: "游标用户",
+          phone: "13600136002",
+          passwordHash: "unused-list-test-hash",
+        },
+        {
+          id: followingId,
+          role: "USER",
+          displayName: "后续用户",
+          phone: "13600136003",
+          passwordHash: "unused-list-test-hash",
+        },
+      ],
+    });
+    const firstPage = await listManagedUsers({ limit: 1 });
+    expect(firstPage.items.map((item) => item.id)).toEqual([cursorId]);
+    expect(firstPage.nextCursor).toBe(cursorId);
+
+    await prisma.user.delete({ where: { id: cursorId } });
+    const secondPage = await listManagedUsers({ cursor: cursorId, limit: 1 });
+
+    expect(secondPage.items.map((item) => item.id)).toEqual([followingId]);
+    expect(secondPage.nextCursor).toBeNull();
+  });
+
   it("rejects a stale optimistic-lock version and distinguishes missing and ADMIN targets", async () => {
     const admin = await createTestAdmin();
     const { user } = await createTestUser(admin.id);

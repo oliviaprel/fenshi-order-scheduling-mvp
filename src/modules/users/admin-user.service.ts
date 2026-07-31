@@ -56,6 +56,7 @@ export async function listManagedUsers(input: {
   const users = await prisma.user.findMany({
     where: {
       role: "USER",
+      ...(input.cursor === undefined ? {} : { id: { gt: input.cursor } }),
       ...(query === undefined || query.length === 0
         ? {}
         : {
@@ -67,7 +68,6 @@ export async function listManagedUsers(input: {
     },
     orderBy: { id: "asc" },
     take: input.limit + 1,
-    ...(input.cursor === undefined ? {} : { cursor: { id: input.cursor }, skip: 1 }),
   });
 
   const hasNextPage = users.length > input.limit;
