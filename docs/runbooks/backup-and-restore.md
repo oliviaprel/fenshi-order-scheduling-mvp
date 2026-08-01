@@ -152,11 +152,12 @@
 8. 用下列函数分别对合成 ADMIN 和 USER 执行登录及 `/api/me` 烟测。密码通过隐藏输入和 stdin 发送，不进入命令历史或 curl 参数；输出只用于核对角色/状态，不保存 Cookie：
 
    ```bash
-   login_smoke() {
+   login_smoke() (
      local label="$1" phone password cookie_file
      read -r -p "${label} 手机号: " phone
      read -r -s -p "${label} 密码: " password; printf '\n'
      cookie_file="$(mktemp)"
+     trap 'rm -f "$cookie_file"' EXIT
      chmod 0600 "$cookie_file"
      DRILL_PHONE="$phone" DRILL_PASSWORD="$password" node -e 'process.stdout.write(JSON.stringify({phone:process.env.DRILL_PHONE,password:process.env.DRILL_PASSWORD}))' |
        curl --fail --silent --show-error \
@@ -167,9 +168,7 @@
          --cookie-jar "$cookie_file" \
          "$RESTORE_ORIGIN/api/auth/login" >/dev/null
      curl --fail --silent --show-error --cacert "$RESTORE_CADDY_CA_FILE" --cookie "$cookie_file" "$RESTORE_ORIGIN/api/me"
-     rm -f "$cookie_file"
-     unset phone password DRILL_PHONE DRILL_PASSWORD
-   }
+   )
 
    login_smoke ADMIN
    login_smoke USER
