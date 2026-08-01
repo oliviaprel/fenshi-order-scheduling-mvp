@@ -31,7 +31,7 @@ services:
     restart: unless-stopped
     depends_on:
       app:
-        condition: service_healthy
+        condition: service_started
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN}
     ports:

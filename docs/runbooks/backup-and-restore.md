@@ -40,19 +40,150 @@
 
 3. 在腾讯云“备份恢复”发起手动备份，等待状态为成功，记录备份 ID、备份时间点和完成时间。
 4. 在备份列表选择“克隆”，**按该备份集**创建新的隔离实例。不要选择原实例回档。记录恢复开始和克隆可用时间。
-5. 克隆完成后重新开启 SSL（克隆实例默认不开启 SSL），下载该实例 CA，并创建只指向克隆私网地址的 `RESTORE_DATABASE_URL`。
-6. 在发布源码目录验证迁移状态并运行同一组只读计数：
+5. 克隆完成后重新开启 SSL（克隆实例默认不开启 SSL），下载该实例 CA 到演练 CVM 的 `/etc/fenshi/restore-drill/tencentdb-postgresql-ca.pem`，权限设为 0600。记录源和克隆实例 ID 并执行防误连检查：
 
-   ```powershell
-   $env:DATABASE_URL=$env:RESTORE_DATABASE_URL
-   npx prisma migrate status
-   psql $env:DATABASE_URL -v ON_ERROR_STOP=1 -c 'SELECT "role", count(*) FROM "User" GROUP BY "role" ORDER BY "role";'
-   psql $env:DATABASE_URL -v ON_ERROR_STOP=1 -c 'SELECT count(*) AS session_count FROM "Session";'
+   ```bash
+   set -euo pipefail
+   read -r -p "源实例 ID: " SOURCE_INSTANCE_ID
+   read -r -p "克隆实例 ID: " RESTORE_CLONE_INSTANCE_ID
+   test -n "$SOURCE_INSTANCE_ID" && test -n "$RESTORE_CLONE_INSTANCE_ID"
+   test "$SOURCE_INSTANCE_ID" != "$RESTORE_CLONE_INSTANCE_ID" || { echo "拒绝：恢复目标与源实例相同" >&2; exit 1; }
+   export RESTORE_CA_FILE='/etc/fenshi/restore-drill/tencentdb-postgresql-ca.pem'
+   test -r "$RESTORE_CA_FILE" || { echo "克隆实例 CA 不可读" >&2; exit 1; }
    ```
 
-7. 启动一套只绑定内网/本机的临时应用指向克隆实例。分别用合成管理员和普通用户登录，访问 `/api/me`，再退出；禁止运行 E2E 全局初始化，因为它会清空测试数据库。
-8. 对比源/目标角色计数、Session 计数、迁移列表和登录结果。再次查询源端计数，确认克隆演练没有改动原数据库。
-9. 记录 RPO、RTO、全部校验和异常。只有负责人签字且记录完整后，才可按腾讯云变更流程销毁临时克隆实例；销毁前再次核对目标实例 ID 与生产实例 ID 不同。
+   从密码管理器粘贴两条只指向**克隆私网地址**的 URL；第一条供容器使用，CA 路径必须是 `/run/secrets/restore-postgresql-ca.pem`，第二条供宿主命令使用，CA 路径必须是 `$RESTORE_CA_FILE`。不得复用生产 `DATABASE_URL`、`/etc/fenshi/app.env` 或生产 app 容器。
+
+   ```bash
+   read -r -s -p "克隆库容器 DATABASE_URL: " RESTORE_DATABASE_URL; printf '\n'
+   read -r -s -p "克隆库宿主 OPERATIONS_DATABASE_URL: " RESTORE_OPERATIONS_DATABASE_URL; printf '\n'
+   export RESTORE_DATABASE_URL RESTORE_OPERATIONS_DATABASE_URL
+   # URL 形状：postgresql://用户:URL编码密码@克隆私网VIP:5432/fenshi?sslmode=verify-full&sslrootcert=对应CA绝对路径
+   ```
+
+6. 在发布源码目录用宿主专用 URL 验证迁移状态并运行同一组只读计数：
+
+   ```bash
+   DATABASE_URL="$RESTORE_OPERATIONS_DATABASE_URL" npx prisma migrate status
+   psql "$RESTORE_OPERATIONS_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT "role", count(*) FROM "User" GROUP BY "role" ORDER BY "role";'
+   psql "$RESTORE_OPERATIONS_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT count(*) AS session_count FROM "Session";'
+   ```
+
+7. 创建并启动只含 app 和临时 Caddy 的隔离 Compose project。镜像必须是本次发布候选的不可变 digest；HTTPS 端口只绑定 `127.0.0.1`。临时 Caddy 只为生产环境的 `Secure` Session Cookie 提供本机 HTTPS，不接触生产 Caddy。以下临时文件不包含 URL 值，只引用当前 shell 的克隆库变量：
+
+   ```bash
+   export RESTORE_APP_IMAGE='registry.example.com/fenshi-order-scheduling-mvp@sha256:替换为候选摘要'
+   export RESTORE_APP_PORT='3443'
+   export RESTORE_ORIGIN="https://127.0.0.1:${RESTORE_APP_PORT}"
+   export RESTORE_PROJECT="fenshi-restore-drill-$(date -u +%Y%m%d%H%M%S)"
+   export RESTORE_COMPOSE_FILE="/tmp/${RESTORE_PROJECT}.compose.yaml"
+   export RESTORE_CADDY_FILE="/tmp/${RESTORE_PROJECT}.Caddyfile"
+   export RESTORE_CADDY_CA_FILE="/tmp/${RESTORE_PROJECT}.root.crt"
+   umask 077
+   cat >"$RESTORE_CADDY_FILE" <<'CADDY'
+   {
+     admin off
+   }
+   https://127.0.0.1 {
+     tls internal
+     reverse_proxy app:3000
+   }
+   CADDY
+
+   cat >"$RESTORE_COMPOSE_FILE" <<'YAML'
+   services:
+     app:
+       image: ${RESTORE_APP_IMAGE:?set immutable restore candidate image}
+       restart: "no"
+       environment:
+         NODE_ENV: production
+         APP_ORIGIN: ${RESTORE_ORIGIN:?set localhost restore origin}
+         DATABASE_URL: ${RESTORE_DATABASE_URL:?set clone-only database URL}
+       expose:
+         - "3000"
+       volumes:
+         - type: bind
+           source: ${RESTORE_CA_FILE:?set clone CA file}
+           target: /run/secrets/restore-postgresql-ca.pem
+           read_only: true
+       healthcheck:
+         test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+         interval: 5s
+         timeout: 3s
+         retries: 12
+         start_period: 10s
+     caddy:
+       image: caddy:2.10-alpine
+       restart: "no"
+       depends_on:
+         app:
+           condition: service_started
+       ports:
+         - "127.0.0.1:${RESTORE_APP_PORT:?set restore port}:443"
+       volumes:
+         - type: bind
+           source: ${RESTORE_CADDY_FILE:?set restore Caddyfile}
+           target: /etc/caddy/Caddyfile
+           read_only: true
+         - caddy-data:/data
+         - caddy-config:/config
+   volumes:
+     caddy-data:
+     caddy-config:
+   YAML
+
+   cleanup_restore_app() {
+     docker compose --project-name "$RESTORE_PROJECT" -f "$RESTORE_COMPOSE_FILE" down --volumes --remove-orphans
+     rm -f "$RESTORE_COMPOSE_FILE" "$RESTORE_CADDY_FILE" "$RESTORE_CADDY_CA_FILE"
+   }
+   trap 'cleanup_restore_app || true' EXIT
+
+   docker compose --project-name "$RESTORE_PROJECT" -f "$RESTORE_COMPOSE_FILE" config --quiet
+   docker compose --project-name "$RESTORE_PROJECT" -f "$RESTORE_COMPOSE_FILE" up -d --wait --wait-timeout 90
+   docker compose --project-name "$RESTORE_PROJECT" -f "$RESTORE_COMPOSE_FILE" \
+     cp caddy:/data/caddy/pki/authorities/local/root.crt "$RESTORE_CADDY_CA_FILE"
+   chmod 0600 "$RESTORE_CADDY_CA_FILE"
+   curl --fail --silent --show-error --cacert "$RESTORE_CADDY_CA_FILE" "$RESTORE_ORIGIN/api/health/live"
+   curl --fail --silent --show-error --cacert "$RESTORE_CADDY_CA_FILE" "$RESTORE_ORIGIN/api/health/ready"
+   ```
+
+   该 project 名称、网络、app 和 Caddy 容器必须独立于生产栈；此演练不绑定 80/443，也不得对生产 Compose project 执行 `up`、`down` 或 Secret 更新。数据库连接仍使用 `sslmode=verify-full`；HTTP 烟测使用临时 Caddy CA，禁止用 `--insecure` 绕过任一 TLS 校验。
+
+8. 用下列函数分别对合成 ADMIN 和 USER 执行登录及 `/api/me` 烟测。密码通过隐藏输入和 stdin 发送，不进入命令历史或 curl 参数；输出只用于核对角色/状态，不保存 Cookie：
+
+   ```bash
+   login_smoke() {
+     local label="$1" phone password cookie_file
+     read -r -p "${label} 手机号: " phone
+     read -r -s -p "${label} 密码: " password; printf '\n'
+     cookie_file="$(mktemp)"
+     chmod 0600 "$cookie_file"
+     DRILL_PHONE="$phone" DRILL_PASSWORD="$password" node -e 'process.stdout.write(JSON.stringify({phone:process.env.DRILL_PHONE,password:process.env.DRILL_PASSWORD}))' |
+       curl --fail --silent --show-error \
+         --cacert "$RESTORE_CADDY_CA_FILE" \
+         --header 'content-type: application/json' \
+         --header "origin: ${RESTORE_ORIGIN}" \
+         --data-binary @- \
+         --cookie-jar "$cookie_file" \
+         "$RESTORE_ORIGIN/api/auth/login" >/dev/null
+     curl --fail --silent --show-error --cacert "$RESTORE_CADDY_CA_FILE" --cookie "$cookie_file" "$RESTORE_ORIGIN/api/me"
+     rm -f "$cookie_file"
+     unset phone password DRILL_PHONE DRILL_PASSWORD
+   }
+
+   login_smoke ADMIN
+   login_smoke USER
+   ```
+
+9. 对比源/目标角色计数、Session 计数、迁移列表和登录结果。再次查询源端计数，确认克隆演练没有改动原数据库；记录 RPO、RTO、全部校验和异常。记录完成后只清理独立演练 project 和临时 Compose 文件：
+
+   ```bash
+   cleanup_restore_app
+   trap - EXIT
+   unset RESTORE_DATABASE_URL RESTORE_OPERATIONS_DATABASE_URL RESTORE_APP_IMAGE RESTORE_APP_PORT RESTORE_ORIGIN RESTORE_PROJECT RESTORE_COMPOSE_FILE RESTORE_CADDY_FILE RESTORE_CADDY_CA_FILE
+   ```
+
+   确认演练容器和网络已消失、生产 app 仍在运行。只有负责人签字且记录完整后，才可按腾讯云变更流程销毁临时克隆实例；销毁前再次核对目标实例 ID 与生产实例 ID 不同。克隆 CA 在实例销毁并完成证据留存后由负责人单独删除。
 
 ## 失败处理
 

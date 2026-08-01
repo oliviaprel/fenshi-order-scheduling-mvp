@@ -14,6 +14,22 @@ type LoggerOptions = {
 
 export type Logger = Record<LogLevel, (message: string, context: LogContext) => void>;
 
+function omitRequestBodies(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => omitRequestBodies(item));
+  }
+
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !["body", "requestbody"].includes(key.toLowerCase()))
+      .map(([key, item]) => [key, omitRequestBodies(item)]),
+  );
+}
+
 export function createLogger(options: LoggerOptions = {}): Logger {
   const environment = options.environment ?? process.env.NODE_ENV ?? "development";
   const now = options.now ?? (() => new Date());
@@ -21,12 +37,8 @@ export function createLogger(options: LoggerOptions = {}): Logger {
 
   const log = (level: LogLevel, message: string, context: LogContext): void => {
     const { requestId, ...contextFields } = context;
-    const safeContext = Object.fromEntries(
-      Object.entries(contextFields).filter(
-        ([key]) =>
-          environment !== "production" || !["body", "requestbody"].includes(key.toLowerCase()),
-      ),
-    );
+    const safeContext =
+      environment === "production" ? omitRequestBodies(contextFields) : contextFields;
 
     write(
       JSON.stringify({
