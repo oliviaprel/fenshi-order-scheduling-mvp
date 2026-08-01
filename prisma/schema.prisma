@@ -55,6 +55,17 @@ model LoginThrottle {
   updatedAt       DateTime  @updatedAt
 }
 
+model LoginAttemptReservation {
+  id           String   @id @default(uuid()) @db.Uuid
+  phoneKeyHash String   @db.Char(64)
+  ipKeyHash    String   @db.Char(64)
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([phoneKeyHash, expiresAt])
+  @@index([ipKeyHash, expiresAt])
+}
+
 model AuditLog {
   id          String   @id @default(uuid()) @db.Uuid
   actorUserId String?  @db.Uuid

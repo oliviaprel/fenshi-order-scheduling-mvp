@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import argon2 from "argon2";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "../../server/db/client";
 import { resetTestDatabase } from "../../server/db/test-database";
 import { createAdmin } from "../users/user.service";
@@ -129,6 +130,106 @@ describe("database-backed login throttling", () => {
         },
       ].sort((left, right) => left.keyHash.localeCompare(right.keyHash)),
     );
+  });
+
+  it("rejects an over-capacity concurrent attempt before it enters Argon2", async () => {
+    await createLoginUser();
+
+    const originalVerify = argon2.verify.bind(argon2);
+    let releaseVerifications = () => {};
+    const verificationGate = new Promise<void>((resolve) => {
+      releaseVerifications = resolve;
+    });
+    let signalFiveEntered = () => {};
+    const fiveEntered = new Promise<void>((resolve) => {
+      signalFiveEntered = resolve;
+    });
+    let verificationCount = 0;
+    const verifySpy = vi.spyOn(argon2, "verify").mockImplementation(async (hash, plain, options) => {
+      verificationCount += 1;
+      if (verificationCount === 5) {
+        signalFiveEntered();
+      }
+      await verificationGate;
+      return originalVerify(hash, plain, options);
+    });
+
+    const attempts = Array.from({ length: 6 }, (_, index) =>
+      login(
+        { phone: "13800138000", password: "wrong-password" },
+        {
+          ip: "203.0.113.20",
+          now: failureTime,
+          requestId: `pre-argon-admission-${index}`,
+        },
+      ),
+    );
+    const observedAttempts = attempts.map((attempt, index) =>
+      attempt.then(
+        () => ({ index, status: "fulfilled" as const, reason: undefined }),
+        (reason: unknown) => ({ index, status: "rejected" as const, reason }),
+      ),
+    );
+    const allResults = Promise.all(observedAttempts);
+
+    let resultBeforeArgonRelease: Awaited<(typeof observedAttempts)[number]> | null = null;
+    try {
+      await fiveEntered;
+      resultBeforeArgonRelease = await Promise.race([
+        ...observedAttempts,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 750)),
+      ]);
+    } finally {
+      releaseVerifications();
+    }
+
+    const results = await allResults;
+    verifySpy.mockRestore();
+
+    expect(resultBeforeArgonRelease).toMatchObject({
+      status: "rejected",
+      reason: { status: 429, code: "LOGIN_BLOCKED" },
+    });
+    expect(verificationCount).toBe(5);
+    expect(
+      results.map((result) =>
+        result.status === "rejected"
+          ? (result.reason as { code?: string }).code
+          : "UNEXPECTED_SUCCESS",
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        "INVALID_CREDENTIALS",
+        "INVALID_CREDENTIALS",
+        "INVALID_CREDENTIALS",
+        "INVALID_CREDENTIALS",
+        "INVALID_CREDENTIALS",
+        "LOGIN_BLOCKED",
+      ]),
+    );
+    expect(
+      await prisma.loginThrottle.findMany({
+        orderBy: { keyHash: "asc" },
+        select: { keyHash: true, failureCount: true, blockedUntil: true },
+      }),
+    ).toEqual(
+      [
+        {
+          keyHash: expectedThrottleHash("phone", "13800138000"),
+          failureCount: 5,
+          blockedUntil: new Date("2026-07-31T00:15:00.000Z"),
+        },
+        {
+          keyHash: expectedThrottleHash("ip", "203.0.113.20"),
+          failureCount: 5,
+          blockedUntil: new Date("2026-07-31T00:15:00.000Z"),
+        },
+      ].sort((left, right) => left.keyHash.localeCompare(right.keyHash)),
+    );
+    const [{ count: activeReservations }] = await prisma.$queryRaw<
+      Array<{ count: bigint }>
+    >`SELECT COUNT(*)::bigint AS count FROM "LoginAttemptReservation"`;
+    expect(Number(activeReservations)).toBe(0);
   });
 
   it("blocks either a normalized phone or a shared IP until the fifteen-minute block expires", async () => {

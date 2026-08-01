@@ -1,3 +1,4 @@
+import { createServer, type Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -24,6 +25,62 @@ describe("health route handlers", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-request-id")).toBe("live-request");
     await expect(response.json()).resolves.toEqual({ status: "ok" });
+  });
+
+  it("returns 503 within the probe budget when the database connection stalls", async () => {
+    const sockets = new Set<Socket>();
+    const stalledServer = createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve, reject) => {
+      stalledServer.once("error", reject);
+      stalledServer.listen(0, "127.0.0.1", resolve);
+    });
+    const address = stalledServer.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("Expected a TCP test server address");
+    }
+
+    vi.stubEnv(
+      "DATABASE_URL",
+      `postgresql://postgres:postgres@127.0.0.1:${address.port}/fenshi_test`,
+    );
+    vi.stubEnv("NODE_ENV", "production");
+    vi.resetModules();
+    const [{ GET }, { prisma }] = await Promise.all([
+      import("./ready/route"),
+      import("../../../server/db/client"),
+    ]);
+    const startedAt = performance.now();
+    const request = GET(healthRequest("ready", "stalled-connection-request"));
+
+    let result: Response | "probe-budget-exceeded";
+    try {
+      result = await Promise.race([
+        request,
+        new Promise<"probe-budget-exceeded">((resolve) =>
+          setTimeout(() => resolve("probe-budget-exceeded"), 2_500),
+        ),
+      ]);
+    } finally {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      await new Promise<void>((resolve, reject) => {
+        stalledServer.close((error) => (error === undefined ? resolve() : reject(error)));
+      });
+      await Promise.allSettled([request]);
+      await prisma.$disconnect();
+    }
+
+    expect(result).not.toBe("probe-budget-exceeded");
+    if (result === "probe-budget-exceeded") {
+      throw new Error("Readiness exceeded the probe budget");
+    }
+    expect(performance.now() - startedAt).toBeLessThan(2_500);
+    expect(result.status).toBe(503);
+    await expect(result.json()).resolves.toEqual({ status: "unavailable" });
   });
 
   it("returns ready status when SELECT 1 succeeds against PostgreSQL", async () => {

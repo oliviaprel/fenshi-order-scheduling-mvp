@@ -14,6 +14,7 @@ export const resetTestDatabase = async () => {
   await prisma.$transaction([
     prisma.auditLog.deleteMany(),
     prisma.session.deleteMany(),
+    prisma.loginAttemptReservation.deleteMany(),
     prisma.loginThrottle.deleteMany(),
     prisma.user.deleteMany(),
   ]);

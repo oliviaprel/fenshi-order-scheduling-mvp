@@ -31,4 +31,24 @@ describe("foundation schema", () => {
 
     await expect(prisma.user.create({ data })).rejects.toMatchObject({ code: "P2002" });
   });
+
+  it("cancels statements that exceed the database query budget", async () => {
+    const startedAt = performance.now();
+
+    await expect(prisma.$queryRaw`SELECT pg_sleep(5)`).rejects.toBeTruthy();
+
+    expect(performance.now() - startedAt).toBeLessThan(2_500);
+    await expect(prisma.$queryRaw<Array<{ value: number }>>`SELECT 1 AS value`).resolves.toEqual([
+      { value: 1 },
+    ]);
+    const [{ activeSleeps }] = await prisma.$queryRaw<Array<{ activeSleeps: bigint }>>`
+      SELECT COUNT(*)::bigint AS "activeSleeps"
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND state = 'active'
+        AND query LIKE '%pg_sleep(5)%'
+        AND pid <> pg_backend_pid()
+    `;
+    expect(Number(activeSleeps)).toBe(0);
+  });
 });

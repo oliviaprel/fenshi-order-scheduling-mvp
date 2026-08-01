@@ -8,9 +8,10 @@ import { normalizeMainlandPhone, passwordSchema } from "../users/user.schemas";
 import type { AuthenticatedUser, LoginContext, LoginResult } from "./auth.types";
 import { hashPassword, verifyPassword } from "./password";
 import {
-  assertLoginAllowed,
-  clearPhoneLoginFailures,
+  completeSuccessfulLogin,
+  releaseLoginAttempt,
   recordLoginFailure,
+  reserveLoginAttempt,
 } from "./login-throttle.service";
 import { createSession } from "./session.service";
 
@@ -25,52 +26,66 @@ export async function login(
   context: LoginContext,
 ): Promise<LoginResult> {
   const phone = normalizeMainlandPhone(input.phone);
-  await assertLoginAllowed(prisma, phone, context.ip, context.now);
+  const reservationId = await reserveLoginAttempt(phone, context.ip, context.now);
 
-  const user = await prisma.user.findUnique({ where: { phone } });
-  const passwordMatches = await verifyPassword(
-    user?.passwordHash ?? (await dummyPasswordHash),
-    input.password,
-  );
+  let user: User | null;
+  let passwordMatches: boolean;
+  try {
+    user = await prisma.user.findUnique({ where: { phone } });
+    passwordMatches = await verifyPassword(
+      user?.passwordHash ?? (await dummyPasswordHash),
+      input.password,
+    );
+  } catch (error) {
+    await releaseLoginAttempt(reservationId);
+    throw error;
+  }
 
   if (user === null || !passwordMatches || user.status === "DISABLED") {
-    await recordLoginFailure(phone, context.ip, context.now);
+    await recordLoginFailure(reservationId, phone, context.ip, context.now);
     throw invalidCredentialsError();
   }
 
-  return prisma.$transaction(async (tx) => {
-    await assertLoginAllowed(tx, phone, context.ip, context.now);
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const [currentUser] = await tx.$queryRaw<User[]>`
+        SELECT *
+        FROM "User"
+        WHERE "id" = ${user.id}::uuid
+        FOR UPDATE
+      `;
+      if (
+        currentUser === undefined ||
+        currentUser.status === "DISABLED" ||
+        currentUser.passwordHash !== user.passwordHash ||
+        currentUser.version !== user.version
+      ) {
+        throw invalidCredentialsError();
+      }
 
-    const [currentUser] = await tx.$queryRaw<User[]>`
-      SELECT *
-      FROM "User"
-      WHERE "id" = ${user.id}::uuid
-      FOR UPDATE
-    `;
-    if (
-      currentUser === undefined ||
-      currentUser.status === "DISABLED" ||
-      currentUser.passwordHash !== user.passwordHash ||
-      currentUser.version !== user.version
-    ) {
-      throw invalidCredentialsError();
-    }
+      await completeSuccessfulLogin(tx, reservationId, phone, context.ip);
+      const session = await createSession(tx, currentUser.id, context.now);
+      const publicUser = toPublicUser(currentUser);
 
-    await clearPhoneLoginFailures(tx, phone);
-    const session = await createSession(tx, currentUser.id, context.now);
-    const publicUser = toPublicUser(currentUser);
+      await writeAudit(tx, {
+        actorUserId: currentUser.id,
+        action: "LOGIN_SUCCEEDED",
+        targetType: "User",
+        targetId: currentUser.id,
+        after: { userId: currentUser.id, expiresAt: session.expiresAt },
+        requestId: context.requestId,
+      });
 
-    await writeAudit(tx, {
-      actorUserId: currentUser.id,
-      action: "LOGIN_SUCCEEDED",
-      targetType: "User",
-      targetId: currentUser.id,
-      after: { userId: currentUser.id, expiresAt: session.expiresAt },
-      requestId: context.requestId,
+      return { user: publicUser, ...session };
     });
-
-    return { user: publicUser, ...session };
-  });
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "INVALID_CREDENTIALS") {
+      await recordLoginFailure(reservationId, phone, context.ip, context.now);
+    } else {
+      await releaseLoginAttempt(reservationId);
+    }
+    throw error;
+  }
 }
 
 export async function changeOwnPassword(
