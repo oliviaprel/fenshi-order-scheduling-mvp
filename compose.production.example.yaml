@@ -1,0 +1,54 @@
+services:
+  app:
+    image: ${APP_IMAGE:?set APP_IMAGE to an immutable image tag or digest}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      APP_ORIGIN: https://${APP_DOMAIN:?set APP_DOMAIN}
+      DATABASE_URL: ${DATABASE_URL:?inject the TencentDB private TLS connection URL}
+    expose:
+      - "3000"
+    secrets:
+      - source: tencentdb_postgresql_ca
+        target: tencentdb-postgresql-ca.pem
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile.example:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  tencentdb_postgresql_ca:
+    file: ${TENCENTDB_POSTGRESQL_CA_FILE:?set the downloaded TencentDB CA PEM path}
+
+volumes:
+  caddy-data:
+  caddy-config:

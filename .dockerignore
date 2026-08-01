@@ -1,0 +1,15 @@
+.git
+.github
+.superpowers
+.next
+node_modules
+coverage
+playwright-report
+test-results
+*.tsbuildinfo
+.env*
+!.env.example
+docs
+e2e
+src/**/*.test.ts
+src/**/*.integration.test.ts

@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_ORIGIN: http://127.0.0.1:3000
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fenshi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d fenshi_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run prisma:validate
+      - run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
+      - run: npm run test:unit
+      - run: npm run test:integration
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
+          E2E_ADMIN_PHONE: ${{ secrets.E2E_ADMIN_PHONE }}
+          E2E_ADMIN_PASSWORD: ${{ secrets.E2E_ADMIN_PASSWORD }}
+          E2E_USER_PHONE: ${{ secrets.E2E_USER_PHONE }}
+          E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
+          E2E_NEW_PASSWORD: ${{ secrets.E2E_NEW_PASSWORD }}
+          E2E_INVALID_PASSWORD: ${{ secrets.E2E_INVALID_PASSWORD }}
+      - run: npm run build
+      - run: npm audit --omit=dev --audit-level=high
