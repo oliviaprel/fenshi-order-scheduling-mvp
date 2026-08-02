@@ -168,6 +168,47 @@ test("rejects a push script that overwrites the attested digest output", () => {
   );
 });
 
+test("rejects workflow-level Trivy exclusion environment variables", () => {
+  const mutated = mutate(ciSource, (workflow) => {
+    workflow.env = { TRIVY_SKIP_DIRS: "/usr/local/lib/node_modules" };
+  });
+  expectError(
+    validate({ ciSource: mutated }),
+    "CI workflow must exactly match the approved top-level contract",
+  );
+});
+
+test("rejects a publish-job override of the canonical image name", () => {
+  const mutated = mutate(publishSource, (workflow) => {
+    workflow.jobs.publish.env = { IMAGE_NAME: "ghcr.io/example/redirected" };
+  });
+  expectError(
+    validate({ publishSource: mutated }),
+    "publish job must exactly match the approved job fields",
+  );
+});
+
+test("rejects the standalone secrets token inside GitHub expressions", () => {
+  const mutated = mutate(ciSource, (workflow) => {
+    steps(workflow, "quality")[2].env = { ALL_SECRETS: "${{ toJSON(secrets) }}" };
+  });
+  expectError(validate({ ciSource: mutated }), "must not reference secrets.");
+});
+
+test("rejects trailing spaces after a push-script continuation backslash", () => {
+  const mutated = mutate(publishSource, (workflow) => {
+    const push = steps(workflow, "publish").find((step) => step.id === "push");
+    push.run = push.run.replace(
+      "docker buildx imagetools inspect \\\n",
+      "docker buildx imagetools inspect \\  \n",
+    );
+  });
+  expectError(
+    validate({ publishSource: mutated }),
+    "publish push script must exactly match the approved template",
+  );
+});
+
 test("rejects actions that are not pinned to a 40-character commit SHA", () => {
   const mutated = mutate(ciSource, (workflow) => {
     steps(workflow, "quality")[0].uses = "actions/checkout@v4";

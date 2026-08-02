@@ -29,6 +29,56 @@ const ACTIONS = Object.freeze({
 
 const APPROVED_ACTION_PUBLISHERS = new Set(["actions", "docker", "anchore", "aquasecurity"]);
 
+const CI_WORKFLOW_CONTRACT = Object.freeze({
+  name: "CI",
+  on: {
+    pull_request: { branches: ["master"] },
+    push: { branches: ["master"] },
+  },
+  permissions: { contents: "read" },
+  concurrency: {
+    group: "ci-${{ github.workflow }}-${{ github.ref }}",
+    "cancel-in-progress": true,
+  },
+});
+
+const CI_JOB_CONTRACT = Object.freeze({
+  name: "Quality, container smoke and security scan",
+  "runs-on": "ubuntu-latest",
+  "timeout-minutes": 45,
+  services: {
+    postgres: {
+      image: "postgres:17-alpine",
+      env: {
+        POSTGRES_USER: "postgres",
+        POSTGRES_PASSWORD: "postgres",
+        POSTGRES_DB: "fenshi_test",
+      },
+      ports: ["5432:5432"],
+      options: '--health-cmd "pg_isready -U postgres -d fenshi_test" --health-interval 5s --health-timeout 5s --health-retries 10',
+    },
+  },
+});
+
+const PUBLISH_WORKFLOW_CONTRACT = Object.freeze({
+  name: "Publish image",
+  on: { push: { branches: ["master"] } },
+  permissions: {
+    contents: "read",
+    packages: "write",
+    "id-token": "write",
+    attestations: "write",
+  },
+  concurrency: { group: "publish-master", "cancel-in-progress": false },
+  env: { IMAGE_NAME },
+});
+
+const PUBLISH_JOB_CONTRACT = Object.freeze({
+  name: "Publish scanned and attested image",
+  "runs-on": "ubuntu-latest",
+  "timeout-minutes": 30,
+});
+
 const CI_SMOKE_SCRIPT = `
 set -Eeuo pipefail
 trap 'docker rm --force fenshi-ci >/dev/null 2>&1 || true' EXIT
@@ -312,12 +362,10 @@ function normalizeImage(value) {
 }
 
 function normalizeScript(value) {
-  return scalar(value)
-    .replaceAll("\r\n", "\n")
-    .split("\n")
-    .map((line) => line.trim().replace(/[ \t]+/g, " "))
-    .filter(Boolean)
-    .join("\n");
+  const lines = scalar(value).replace(/\r\n?/g, "\n").split("\n");
+  while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+  while (lines.length > 0 && lines.at(-1).trim() === "") lines.pop();
+  return lines.join("\n");
 }
 
 function normalizeLineList(value) {
@@ -354,6 +402,22 @@ function validateStepContract(name, steps, contract, errors) {
   }
 }
 
+function validateWorkflowContract(name, workflow, contract, errors) {
+  const workflowShell = structuredClone(workflow);
+  delete workflowShell.jobs;
+  if (!isDeepStrictEqual(workflowShell, contract)) {
+    errors.push(`${name} workflow must exactly match the approved top-level contract`);
+  }
+}
+
+function validateJobContract(name, job, contract, errors) {
+  const jobShell = structuredClone(job);
+  delete jobShell.steps;
+  if (!isDeepStrictEqual(jobShell, contract)) {
+    errors.push(`${name} job must exactly match the approved job fields`);
+  }
+}
+
 function findNamedProperties(value, propertyName, trail = []) {
   const found = [];
   if (Array.isArray(value)) {
@@ -385,7 +449,7 @@ function validateActions(workflowName, workflow, errors) {
 }
 
 function containsSecretsContext(value) {
-  return /\bsecrets\s*(?:\.|\[\s*(['"])[^'"]+\1\s*\])/i.test(value);
+  return /\bsecrets\b/i.test(value);
 }
 
 function findSecrets(value, trail = []) {
@@ -535,6 +599,7 @@ function validateImageSecurityChain(name, steps, expectedImage, expectedContract
 }
 
 function validateCi(workflow, errors) {
+  validateWorkflowContract("CI", workflow, CI_WORKFLOW_CONTRACT, errors);
   validateTriggers("CI", workflow, { pull_request: ["master"], push: ["master"] }, errors);
   if (!exactPermissions(workflow.permissions, { contents: "read" })) {
     errors.push("CI permissions must be exactly contents: read");
@@ -550,6 +615,7 @@ function validateCi(workflow, errors) {
       errors.push(`CI job ${jobName} must inherit the root read-only permissions without overrides`);
     }
   }
+  validateJobContract("CI quality", workflow.jobs?.quality ?? {}, CI_JOB_CONTRACT, errors);
   const steps = Array.isArray(workflow.jobs?.quality?.steps) ? workflow.jobs.quality.steps : [];
   validateStepContract("CI", steps, CI_STEP_CONTRACT, errors);
   validateDatabaseSteps(steps, errors);
@@ -571,6 +637,7 @@ function validateCi(workflow, errors) {
 }
 
 function validatePublish(workflow, errors) {
+  validateWorkflowContract("publish", workflow, PUBLISH_WORKFLOW_CONTRACT, errors);
   validateTriggers("publish", workflow, { push: ["master"] }, errors);
   if (!exactPermissions(workflow.permissions, {
     contents: "read",
@@ -589,6 +656,7 @@ function validatePublish(workflow, errors) {
       errors.push(`publish job ${jobName} must inherit the exact root permissions without overrides`);
     }
   }
+  validateJobContract("publish", workflow.jobs?.publish ?? {}, PUBLISH_JOB_CONTRACT, errors);
   const steps = Array.isArray(workflow.jobs?.publish?.steps) ? workflow.jobs.publish.steps : [];
   validateStepContract("publish", steps, PUBLISH_STEP_CONTRACT, errors);
 
