@@ -7,6 +7,12 @@ import { createSessionToken, hashSessionToken } from "./session-token";
 const SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000;
 const LAST_SEEN_WRITE_INTERVAL_MS = 15 * 60 * 1_000;
 
+export function getSessionCookieName(
+  nodeEnv: string | undefined,
+): "__Host-fenshi_session" | "fenshi_session" {
+  return nodeEnv === "production" ? "__Host-fenshi_session" : "fenshi_session";
+}
+
 export async function createSession(
   tx: Prisma.TransactionClient,
   userId: string,

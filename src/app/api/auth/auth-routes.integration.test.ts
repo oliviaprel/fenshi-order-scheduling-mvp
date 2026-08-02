@@ -8,6 +8,7 @@ import { POST as logoutRoute } from "./logout/route";
 import { GET as meRoute } from "../me/route";
 import { requireUser } from "../../../server/auth/guards";
 import { routeHandler } from "../../../server/http/route-handler";
+import * as sessionService from "../../../modules/auth/session.service";
 
 const appOrigin = "http://localhost:3000";
 
@@ -42,13 +43,13 @@ function request(
   });
 }
 
-function sessionCookie(response: Response): string {
+function sessionCookie(response: Response, cookieName = "fenshi_session"): string {
   const setCookie = response.headers.get("set-cookie");
-  const match = setCookie?.match(/(?:^|,\s*)fenshi_session=([^;]+)/);
+  const match = setCookie?.match(new RegExp(`(?:^|,\\s*)${cookieName}=([^;]+)`));
   if (match?.[1] === undefined) {
-    throw new Error(`Response did not set fenshi_session: ${setCookie}`);
+    throw new Error(`Response did not set ${cookieName}: ${setCookie}`);
   }
-  return `fenshi_session=${match[1]}`;
+  return `${cookieName}=${match[1]}`;
 }
 
 async function createUser(options?: {
@@ -131,7 +132,10 @@ describe("authentication route handlers", () => {
     await createUser();
     vi.stubEnv("NODE_ENV", "production");
     vi.resetModules();
-    const { POST: productionLoginRoute } = await import("./login/route");
+    const [{ POST: productionLoginRoute }, { POST: productionLogoutRoute }] = await Promise.all([
+      import("./login/route"),
+      import("./logout/route"),
+    ]);
 
     const response = await productionLoginRoute(
       request("/api/auth/login", {
@@ -142,6 +146,31 @@ describe("authentication route handlers", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("set-cookie")).toContain("Secure");
+    expect(response.headers.get("set-cookie")).toContain("__Host-fenshi_session=");
+
+    const logoutResponse = await productionLogoutRoute(
+      request("/api/auth/logout", {
+        method: "POST",
+        cookie: sessionCookie(response, "__Host-fenshi_session"),
+      }),
+    );
+    expect(logoutResponse.status).toBe(204);
+    expect(logoutResponse.headers.get("set-cookie")).toContain("__Host-fenshi_session=");
+    expect(logoutResponse.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(await prisma.session.count()).toBe(0);
+  });
+
+  it("uses the environment-specific name for session cookies", () => {
+    const getSessionCookieName = (
+      sessionService as typeof sessionService & {
+        getSessionCookieName: (nodeEnv: string) => string;
+      }
+    ).getSessionCookieName;
+
+    expect(getSessionCookieName).toBeTypeOf("function");
+    expect(getSessionCookieName("production")).toBe("__Host-fenshi_session");
+    expect(getSessionCookieName("development")).toBe("fenshi_session");
+    expect(getSessionCookieName("test")).toBe("fenshi_session");
   });
 
   it.each([

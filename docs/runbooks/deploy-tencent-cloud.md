@@ -80,11 +80,11 @@ OPERATIONS_DATABASE_URL='postgresql://应用账号:URL编码密码@私网VIP:543
 
    ```bash
    curl --fail --silent --show-error https://orders.example.com/api/health/live
-   curl --fail --silent --show-error https://orders.example.com/api/health/ready
+   test "$(curl --silent --output /dev/null --write-out '%{http_code}' https://orders.example.com/api/health/ready)" = "404"
    sudo docker compose --env-file /etc/fenshi/app.env -f compose.production.example.yaml ps
    ```
 
-   两个接口都应返回 HTTP 200 和 `{"status":"ok"}`。再用管理员和一个合成普通用户完成登录、强制改密和退出烟测；不要使用真实客户数据。
+   公网 `live` 应返回 HTTP 200 和 `{"status":"ok"}`；公网 `ready` 必须返回 HTTP 404。Compose 健康检查直接通过 `app:3000/api/health/ready` 访问应用。再用管理员和一个合成普通用户完成登录、强制改密和退出烟测；不要使用真实客户数据。
 
 ## 4. 后续发布
 
@@ -102,7 +102,8 @@ OPERATIONS_DATABASE_URL='postgresql://应用账号:URL编码密码@私网VIP:543
    ```bash
    sudo docker compose --env-file /etc/fenshi/app.env -f compose.production.example.yaml pull app
    sudo docker compose --env-file /etc/fenshi/app.env -f compose.production.example.yaml up -d app
-   curl --fail --silent --show-error https://orders.example.com/api/health/ready
+   curl --fail --silent --show-error https://orders.example.com/api/health/live
+   test "$(curl --silent --output /dev/null --write-out '%{http_code}' https://orders.example.com/api/health/ready)" = "404"
    ```
 
 4. 迁移只允许前向执行；不得自动运行 schema downgrade。若旧镜像与已部署 schema 不兼容，保持流量关闭，交由数据库负责人按已审查的恢复方案处理。

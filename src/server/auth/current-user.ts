@@ -1,10 +1,13 @@
 import { cookies } from "next/headers";
 import { getEnv } from "../../lib/env";
-import { authenticateSession } from "../../modules/auth/session.service";
+import {
+  authenticateSession,
+  getSessionCookieName,
+} from "../../modules/auth/session.service";
 import type { AuthenticatedUser } from "../../modules/auth/auth.types";
 import { getRouteContext } from "../http/route-handler";
 
-export const SESSION_COOKIE = "fenshi_session";
+export const SESSION_COOKIE = getSessionCookieName(getEnv().NODE_ENV);
 export const sessionCookieOptions = {
   httpOnly: true,
   sameSite: "lax" as const,

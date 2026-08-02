@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import nextConfig from "../next.config";
 
 afterEach(() => {
@@ -21,6 +22,7 @@ describe("Next.js production security configuration", () => {
       "Referrer-Policy": "strict-origin-when-cross-origin",
       "X-Content-Type-Options": "nosniff",
       "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+      "Strict-Transport-Security": "max-age=31536000",
     });
     expect(headers["Content-Security-Policy"]).toContain("default-src 'self'");
     expect(headers["Content-Security-Policy"]).toContain("frame-ancestors 'none'");
@@ -39,5 +41,18 @@ describe("Next.js production security configuration", () => {
     )?.value;
 
     expect(contentSecurityPolicy).toContain("script-src 'self' 'unsafe-inline' 'unsafe-eval'");
+  });
+
+  it("denies public readiness before proxying the public liveness probe", () => {
+    const caddyfile = readFileSync("deploy/Caddyfile.example", "utf8");
+    const readyHandle = caddyfile.indexOf("handle @ready");
+    const readyDeny = caddyfile.indexOf("respond 404", readyHandle);
+    const liveHandle = caddyfile.indexOf("handle @live");
+    const liveProxy = caddyfile.indexOf("reverse_proxy app:3000", liveHandle);
+
+    expect(readyHandle).toBeGreaterThanOrEqual(0);
+    expect(readyDeny).toBeGreaterThan(readyHandle);
+    expect(liveHandle).toBeGreaterThan(readyDeny);
+    expect(liveProxy).toBeGreaterThan(liveHandle);
   });
 });

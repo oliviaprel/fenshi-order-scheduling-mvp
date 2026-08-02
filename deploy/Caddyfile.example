@@ -5,8 +5,13 @@
 {$APP_DOMAIN} {
 	encode zstd gzip
 
-	@health path /api/health/live /api/health/ready
-	handle @health {
+	@ready path /api/health/ready
+	handle @ready {
+		respond 404
+	}
+
+	@live path /api/health/live
+	handle @live {
 		reverse_proxy app:3000 {
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}
