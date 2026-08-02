@@ -15,7 +15,8 @@
     "test:e2e": "playwright test",
     "prisma:generate": "prisma generate",
     "prisma:validate": "prisma validate",
-    "admin:create": "tsx scripts/create-admin.ts"
+    "admin:create": "tsx scripts/create-admin.ts",
+    "maintenance:daily": "tsx scripts/run-maintenance.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.9.1",

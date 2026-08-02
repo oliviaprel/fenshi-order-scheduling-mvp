@@ -80,4 +80,5 @@ model AuditLog {
 
   @@index([actorUserId, createdAt])
   @@index([targetType, targetId])
+  @@index([createdAt, id])
 }
