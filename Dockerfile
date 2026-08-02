@@ -1,9 +1,9 @@
-FROM node:22-bookworm-slim AS deps
+FROM node:25-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --maxsockets=5 --loglevel=verbose
 
-FROM node:22-bookworm-slim AS builder
+FROM node:25-bookworm-slim AS builder
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
@@ -11,7 +11,7 @@ COPY . .
 RUN PRISMA_GENERATE_NO_ENGINE=1 MIGRATION_DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build npx prisma generate \
     && APP_ORIGIN=http://127.0.0.1:3000 DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build npm run build
 
-FROM node:22-bookworm-slim AS runner
+FROM node:25-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
