@@ -49,6 +49,11 @@ jobs:
       - name: Validate workflow security invariants
         id: validate_workflows
         run: npm run test:workflows
+      - name: Verify fresh split-role database bootstrap
+        id: database_role_smoke
+        run: npm run test:database-roles
+        env:
+          POSTGRES_PORT: '55432'
       - run: npm run prisma:generate
         env:
           MIGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test

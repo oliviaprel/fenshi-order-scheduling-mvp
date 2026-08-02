@@ -129,6 +129,12 @@ const CI_STEP_CONTRACT = Object.freeze([
     id: "validate_workflows",
     run: "npm run test:workflows",
   },
+  {
+    name: "Verify fresh split-role database bootstrap",
+    id: "database_role_smoke",
+    run: "npm run test:database-roles",
+    env: { POSTGRES_PORT: "55432" },
+  },
   { id: "prisma_generate", run: "npm run prisma:generate", env: MIGRATION_ENV },
   { id: "lint", run: "npm run lint" },
   { id: "typecheck", run: "npm run typecheck" },

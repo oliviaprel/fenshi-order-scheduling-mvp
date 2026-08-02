@@ -35,6 +35,27 @@ test("the committed workflows satisfy every structural invariant", () => {
   assert.deepEqual(validate(), []);
 });
 
+test("rejects weakening or removing the isolated split-role database smoke gate", async (t) => {
+  await t.test("removes the gate", () => {
+    const mutated = mutate(ciSource, (workflow) => {
+      workflow.jobs.quality.steps = steps(workflow, "quality").filter(
+        (step) => step.id !== "database_role_smoke",
+      );
+    });
+    expectError(validate({ ciSource: mutated }), "CI steps must exactly match the approved sequence");
+  });
+
+  await t.test("collides with the primary CI PostgreSQL service", () => {
+    const mutated = mutate(ciSource, (workflow) => {
+      const smoke = steps(workflow, "quality").find(
+        (step) => step.id === "database_role_smoke",
+      );
+      smoke.env.POSTGRES_PORT = "5432";
+    });
+    expectError(validate({ ciSource: mutated }), "CI steps must exactly match the approved sequence");
+  });
+});
+
 test("rejects changing the pull-request target from master to develop", () => {
   const mutated = mutate(ciSource, (workflow) => {
     workflow.on.pull_request.branches = ["develop"];

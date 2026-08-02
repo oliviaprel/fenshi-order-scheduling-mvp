@@ -34,13 +34,18 @@ describe("database role deployment artifacts", () => {
     expect(roleRunbook).toMatch(/GRANT USAGE ON SCHEMA public TO fenshi_app;/);
   });
 
-  it("boots a fresh local database with the documented split roles", () => {
+  it("declares a localhost-only split-role database and a real smoke gate", () => {
     const compose = readProjectFile("compose.dev.yaml");
     const exampleEnv = readProjectFile(".env.example");
+    const packageJson = JSON.parse(readProjectFile("package.json")) as {
+      scripts?: Record<string, string>;
+    };
+    const ci = readProjectFile(".github/workflows/ci.yml");
     const localRoleBootstrap = readProjectFile(
       "docker/postgres/init-local-database-roles.sql",
     );
 
+    expect(compose).toContain('"127.0.0.1:${POSTGRES_PORT:-5432}:5432"');
     expect(compose).toContain(
       "./docker/postgres/init-local-database-roles.sql:/docker-entrypoint-initdb.d/01-init-local-database-roles.sql:ro",
     );
@@ -55,5 +60,19 @@ describe("database role deployment artifacts", () => {
     expect(localRoleBootstrap).toContain(
       "ALTER DEFAULT PRIVILEGES FOR ROLE fenshi_migrator IN SCHEMA public",
     );
+    expect(packageJson.scripts?.["test:database-roles"]).toBe(
+      "node scripts/verify-local-database-roles.mjs",
+    );
+    expect(ci).toMatch(/id: database_role_smoke\r?\n\s+run: npm run test:database-roles/);
+    expect(ci).toMatch(/POSTGRES_PORT: ['"]?55432['"]?/);
+  });
+
+  it("uses the network-resilient Docker install while retaining an independent audit gate", () => {
+    const dockerfile = readProjectFile("Dockerfile");
+    const ci = readProjectFile(".github/workflows/ci.yml");
+
+    expect(dockerfile).toContain("RUN npm ci --no-audit --maxsockets=5");
+    expect(dockerfile).not.toMatch(/npm ci .*--ignore-scripts/);
+    expect(ci).toContain("npm audit --omit=dev --audit-level=high");
   });
 });
