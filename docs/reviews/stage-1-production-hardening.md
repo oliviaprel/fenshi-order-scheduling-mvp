@@ -8,8 +8,16 @@
 
 ## 结论
 
-Stage 1 的代码级加固和本地质量门禁已经验证，但**当前仍不允许生产上线**。以下外部证据
-不能在本地开发机伪造，必须由对应负责人完成后再复核：
+> **NO PRODUCTION LAUNCH — 当前禁止生产上线。**
+>
+> - Caddy gate: FAIL；2.10.2: 64 High / 6 Critical；2.11.4 candidate: 10 High / 0 Critical。
+>   在获得扫描门禁通过的新 digest 前，禁止发布生产镜像。
+> - H2 restore drill 尚未在真实腾讯云隔离实例完成并留证。
+> - GitHub ruleset/master/GHCR/attestation 尚未在外部环境完成并留证。
+> - L3 CSP deferred；本阶段不声称关闭该风险。
+
+Stage 1 的应用代码质量门禁和本地容器功能烟测已经验证，但本地 Caddy 漏洞门禁明确失败；
+同时，以下外部证据不能在本地开发机伪造，必须由对应负责人完成后再复核：
 
 1. H2：在独立腾讯云 PostgreSQL 实例执行真实备份恢复演练，记录备份 ID、源/目标实例、
    RPO、RTO、数据计数、ADMIN/USER 登录结果和负责人。
@@ -71,7 +79,7 @@ attestation。生产部署只能使用 `ghcr.io/oliviaprel/fenshi-order-scheduli
 | H2 真实备份恢复演练 | **外部阻塞** | 既有 `docs/runbooks/backup-and-restore.md` | 演练表仍为“未执行”；必须由云数据库负责人完成 |
 | H3 请求体无界 | 已关闭 | `da2a743`, `90fd69d` | 32 KiB、有/无 `Content-Length`、reader cancel 路径由 unit/integration 全量覆盖 |
 | H4 readiness 公网开放 | 已关闭 | `68ef088` | Caddy 公共 ready 404、app 内部 ready 200（见容器验证） |
-| H5 无生产容器供应链 | 本地实现；外部发布待办 | `44c9861`, `4be8543`, `def8554`, `eb16a3f`, `8357360`, `5d87259` | 应用镜像及固定 Caddy `2.10.2-alpine@sha256:4c6e91c…e530d` 均受 SPDX、完整 inventory、可修复 High/Critical gate 保护；GHCR artifact/attestation 待真实 `master` run |
+| H5 无生产容器供应链 | **Caddy gate FAIL；外部发布亦阻塞** | `44c9861`, `4be8543`, `def8554`, `eb16a3f`, `8357360`, `5d87259` | 固定 Caddy `2.10.2-alpine@sha256:4c6e91c…e530d` 的可修复 High/Critical gate 已失败；GHCR artifact/attestation 及真实 `master` run 也尚未完成 |
 
 > 2026-08-03 本地 Caddy 复扫：SPDX-2.3 为 917,688 bytes / 163 packages；Trivy 0.70.0 完整 inventory 为 70 项（High 64、Critical 6）。严格 fixable gate 非零阻断，因此该 2.10.2 精确镜像目前不得发布。未执行线上发布，也未豁免或降低门禁；须另行批准并验证更新的官方 Caddy 引用。
 >

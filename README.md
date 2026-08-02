@@ -2,9 +2,14 @@
 
 第一阶段提供手机号/密码登录、强制改密、会话、管理员用户管理、审计记录与登录限流，并附带生产健康检查、容器样例和腾讯云运行手册。
 
-> **生产状态（2026-08-03）：尚未获准上线。** Stage 1 的本地代码与容器门禁已完成，
-> 但真实腾讯云隔离恢复演练、`master` 上的 GitHub 发布工作流、公开 GHCR 包、线上
-> provenance 验证及 GitHub ruleset 仍需在外部环境完成并留证。完整订单排期业务也仍在后续阶段。
+> **NO PRODUCTION LAUNCH — 生产状态（2026-08-03）：禁止上线。**
+>
+> - Caddy gate: FAIL；2.10.2: 64 High / 6 Critical；2.11.4 candidate: 10 High / 0 Critical。
+>   在获得扫描门禁通过的新 digest 前，禁止发布生产镜像。
+> - H2 restore drill 尚未在真实腾讯云隔离实例完成并留证。
+> - GitHub ruleset/master/GHCR/attestation 尚未在外部环境完成并留证。
+> - L3 CSP deferred；完整订单排期业务也仍在后续阶段。
+>
 > 详见 [Stage 1 加固证据](docs/reviews/stage-1-production-hardening.md)。
 
 ## 本地启动

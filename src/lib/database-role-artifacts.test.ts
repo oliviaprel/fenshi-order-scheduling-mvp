@@ -86,7 +86,10 @@ describe("database role deployment artifacts", () => {
     expect(runbook).toMatch(/MIGRATION_DATABASE_URL="\$MIGRATION_DATABASE_URL" npm run prisma:generate/);
     expect(runbook).toMatch(/MIGRATION_DATABASE_URL="\$MIGRATION_DATABASE_URL" npx prisma migrate deploy/);
     expect(runbook).toMatch(/DATABASE_URL="\$OPERATIONS_DATABASE_URL" npm run admin:create/);
-    expect(runbook).toMatch(/postgresql-runtime-hardening\.sql\r?\n\s+unset MIGRATION_DATABASE_URL/);
+    expect(runbook).not.toMatch(/psql\s+"\$MIGRATION_DATABASE_URL"/);
+    expect(runbook).toMatch(
+      /\(\r?\n\s+export PGDATABASE="\$MIGRATION_DATABASE_URL"\r?\n\s+unset MIGRATION_DATABASE_URL\r?\n\s+trap 'unset PGDATABASE' EXIT\r?\n\s+trap 'exit 1' HUP INT TERM\r?\n\s+psql -v ON_ERROR_STOP=1 -f docs\/runbooks\/postgresql-runtime-hardening\.sql\r?\n\s+\)\r?\n\s+unset MIGRATION_DATABASE_URL/,
+    );
     expect(runbook).toMatch(/npm run admin:create\r?\n\s+unset OPERATIONS_DATABASE_URL/);
   });
 
@@ -97,8 +100,25 @@ describe("database role deployment artifacts", () => {
 
     expect(hardening).toMatch(/REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLE "_prisma_migrations" FROM fenshi_app;/);
     expect(deploy).toContain("postgresql-runtime-hardening.sql");
-    expect(deploy).toMatch(/psql "\$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f docs\/runbooks\/postgresql-runtime-hardening\.sql/);
+    expect(deploy).toMatch(/psql -v ON_ERROR_STOP=1 -f docs\/runbooks\/postgresql-runtime-hardening\.sql/);
     expect(smoke).toContain("postgresql-runtime-hardening.sql");
+  });
+
+  it("states every local and external production launch blocker consistently", () => {
+    const readme = readProjectFile("README.md");
+    const review = readProjectFile("docs/reviews/stage-1-production-hardening.md");
+
+    for (const document of [readme, review]) {
+      expect(document).toContain("NO PRODUCTION LAUNCH");
+      expect(document).toContain("Caddy gate: FAIL");
+      expect(document).toContain("2.10.2: 64 High / 6 Critical");
+      expect(document).toContain("2.11.4 candidate: 10 High / 0 Critical");
+      expect(document).toContain("H2 restore drill");
+      expect(document).toContain("GitHub ruleset/master/GHCR/attestation");
+      expect(document).toContain("L3 CSP deferred");
+    }
+    expect(review).toMatch(/H5[^\n]*Caddy gate FAIL/);
+    expect(review).not.toContain("仅外部阻断");
   });
 
   it("requires the same three health gates in deployment and incident response", () => {

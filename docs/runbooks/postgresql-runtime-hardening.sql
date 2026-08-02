@@ -4,4 +4,3 @@
 \set ON_ERROR_STOP on
 
 REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLE "_prisma_migrations" FROM fenshi_app;
-

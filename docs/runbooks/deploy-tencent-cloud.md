@@ -137,7 +137,13 @@ MIGRATION_DATABASE_URL='postgresql://fenshi_migrator:URL编码密码@私网VIP:5
 
    ```bash
    MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" npx prisma migrate deploy
-   psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/runbooks/postgresql-runtime-hardening.sql
+   (
+     export PGDATABASE="$MIGRATION_DATABASE_URL"
+     unset MIGRATION_DATABASE_URL
+     trap 'unset PGDATABASE' EXIT
+     trap 'exit 1' HUP INT TERM
+     psql -v ON_ERROR_STOP=1 -f docs/runbooks/postgresql-runtime-hardening.sql
+   )
    unset MIGRATION_DATABASE_URL
    ```
 
