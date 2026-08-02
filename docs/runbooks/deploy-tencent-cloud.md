@@ -23,6 +23,8 @@ individual test helpers likewise reject empty values before use.
 
 ## GitHub 镜像供应链发布
 
+生产 Caddy 基线固定为 `caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d`。CI 和发布工作流都对这个确切引用生成 SPDX SBOM、保存完整 High/Critical inventory，并在任何 registry 登录/推送前阻断可修复 High/Critical。Dependabot 的 Docker 更新只能作为候选；合并前必须同时更新 tag+digest、工作流精确契约和 mutation tests，并重新保存两份扫描证据。
+
 生产镜像固定为 `ghcr.io/oliviaprel/fenshi-order-scheduling-mvp`。Pull request 的
 `CI` 工作流只在 runner 本地构建和启动镜像，并生成 SBOM、执行 High/Critical
 漏洞扫描；它没有 GHCR 登录、镜像推送、OIDC 或 attestation 写权限。只有
@@ -135,7 +137,7 @@ MIGRATION_DATABASE_URL='postgresql://fenshi_migrator:URL编码密码@私网VIP:5
 
    ```bash
    MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" npx prisma migrate deploy
-   MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" psql -v ON_ERROR_STOP=1 -f docs/runbooks/postgresql-runtime-hardening.sql
+   psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/runbooks/postgresql-runtime-hardening.sql
    ```
 
 4. 首次且仅首次，在仍未开放业务流量时以交互式 TTY 创建管理员：

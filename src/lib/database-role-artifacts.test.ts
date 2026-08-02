@@ -96,6 +96,7 @@ describe("database role deployment artifacts", () => {
 
     expect(hardening).toMatch(/REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLE "_prisma_migrations" FROM fenshi_app;/);
     expect(deploy).toContain("postgresql-runtime-hardening.sql");
+    expect(deploy).toMatch(/psql "\$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f docs\/runbooks\/postgresql-runtime-hardening\.sql/);
     expect(smoke).toContain("postgresql-runtime-hardening.sql");
   });
 
@@ -110,5 +111,13 @@ describe("database role deployment artifacts", () => {
       expect(runbook).toContain("internal ready=200");
       expect(runbook).toMatch(/docker compose[\s\S]*exec -T app[\s\S]*api\/health\/ready/);
     }
+  });
+
+  it("pins the production Caddy image to the reviewed immutable digest", () => {
+    const compose = readProjectFile("compose.production.example.yaml");
+    expect(compose).toContain(
+      "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d",
+    );
+    expect(compose).not.toMatch(/image: caddy:[^@\r\n]+(?:\r?\n|$)/);
   });
 });
