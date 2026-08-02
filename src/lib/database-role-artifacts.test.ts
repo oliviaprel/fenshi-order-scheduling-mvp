@@ -86,7 +86,8 @@ describe("database role deployment artifacts", () => {
     expect(runbook).toMatch(/MIGRATION_DATABASE_URL="\$MIGRATION_DATABASE_URL" npm run prisma:generate/);
     expect(runbook).toMatch(/MIGRATION_DATABASE_URL="\$MIGRATION_DATABASE_URL" npx prisma migrate deploy/);
     expect(runbook).toMatch(/DATABASE_URL="\$OPERATIONS_DATABASE_URL" npm run admin:create/);
-    expect(runbook).toContain("unset MIGRATION_DATABASE_URL OPERATIONS_DATABASE_URL");
+    expect(runbook).toMatch(/postgresql-runtime-hardening\.sql\r?\n\s+unset MIGRATION_DATABASE_URL/);
+    expect(runbook).toMatch(/npm run admin:create\r?\n\s+unset OPERATIONS_DATABASE_URL/);
   });
 
   it("runs one repeatable post-migration hardening artifact everywhere", () => {

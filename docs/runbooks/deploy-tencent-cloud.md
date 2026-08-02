@@ -138,6 +138,7 @@ MIGRATION_DATABASE_URL='postgresql://fenshi_migrator:URL编码密码@私网VIP:5
    ```bash
    MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" npx prisma migrate deploy
    psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f docs/runbooks/postgresql-runtime-hardening.sql
+   unset MIGRATION_DATABASE_URL
    ```
 
 4. 首次且仅首次，在仍未开放业务流量时以交互式 TTY 创建管理员：
@@ -145,7 +146,7 @@ MIGRATION_DATABASE_URL='postgresql://fenshi_migrator:URL编码密码@私网VIP:5
    ```bash
    OPERATIONS_DATABASE_URL="$(sudo sed -n "s/^OPERATIONS_DATABASE_URL='\(.*\)'$/\1/p" /etc/fenshi/app.env)"
    DATABASE_URL="$OPERATIONS_DATABASE_URL" npm run admin:create
-   unset MIGRATION_DATABASE_URL OPERATIONS_DATABASE_URL
+   unset OPERATIONS_DATABASE_URL
    ```
 
    密码应由密码管理器生成，在隐藏提示中输入；不得作为参数、环境变量或日志内容。普通用户只能由管理员登录后创建。
@@ -171,7 +172,7 @@ MIGRATION_DATABASE_URL='postgresql://fenshi_migrator:URL编码密码@私网VIP:5
 ## 4. 后续发布
 
 1. 保存当前 `APP_IMAGE` digest 为回滚候选，确认其仍可从镜像仓库拉取。
-2. 在新版本源码上依次运行无生产 Secret 的 `env -u DATABASE_URL -u OPERATIONS_DATABASE_URL -u MIGRATION_DATABASE_URL npm ci`、全量质量门禁、迁移，并在每次迁移后运行同一个 `docs/runbooks/postgresql-runtime-hardening.sql`；完成后 `unset MIGRATION_DATABASE_URL OPERATIONS_DATABASE_URL`。
+2. 在新版本源码上依次运行无生产 Secret 的 `env -u DATABASE_URL -u OPERATIONS_DATABASE_URL -u MIGRATION_DATABASE_URL npm ci`、全量质量门禁、迁移，并在每次迁移后运行同一个 `docs/runbooks/postgresql-runtime-hardening.sql`；迁移与硬化完成后立即 `unset MIGRATION_DATABASE_URL`。
 3. 只有迁移成功后，才把 `/etc/fenshi/app.env` 的 `APP_IMAGE` 更新为新 digest并运行 `docker compose pull && docker compose up -d`。
 4. 检查 live、ready、容器状态和登录烟测；记录提交 SHA、镜像 digest、迁移编号、操作者和时间。
 
