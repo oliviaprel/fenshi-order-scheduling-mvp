@@ -108,7 +108,7 @@ test("rejects every registry login and push placed before the scan gate", () => 
   });
   const errors = validate({ publishSource: mutated });
   expectError(errors, "registry login must occur after the vulnerability gate");
-  expectError(errors, "docker push must occur after the vulnerability gate");
+  expectError(errors, "publish steps must exactly match the approved sequence");
 });
 
 test("rejects any secrets context in pull-request CI", () => {
@@ -116,6 +116,56 @@ test("rejects any secrets context in pull-request CI", () => {
     steps(workflow, "quality")[2].env = { TOKEN: "${{ secrets.SOME_TOKEN }}" };
   });
   expectError(validate({ ciSource: mutated }), "must not reference secrets.");
+});
+
+test("rejects spaced single- and double-quoted bracket secrets in pull-request CI", () => {
+  for (const expression of ["${{ secrets['TOKEN'] }}", '${{ secrets [ "TOKEN" ] }}']) {
+    const mutated = mutate(ciSource, (workflow) => {
+      steps(workflow, "quality")[2].env = { TOKEN: expression };
+    });
+    expectError(validate({ ciSource: mutated }), "must not reference secrets.");
+  }
+});
+
+test("rejects an extra shell login and docker image push before the gate", () => {
+  const mutated = mutate(publishSource, (workflow) => {
+    const publishSteps = steps(workflow, "publish");
+    const gateIndex = publishSteps.findIndex(
+      (step) => step.with?.["exit-code"] === "1" || step.with?.["exit-code"] === 1,
+    );
+    publishSteps.splice(gateIndex, 0, {
+      name: "Bypass registry gate",
+      shell: "bash",
+      run: "docker login ghcr.io\ndocker image push \"${IMAGE_NAME}:latest\"",
+    });
+  });
+  expectError(
+    validate({ publishSource: mutated }),
+    "publish steps must exactly match the approved sequence",
+  );
+});
+
+test("rejects weakened Trivy scope and exclusion inputs", () => {
+  const mutated = mutate(ciSource, (workflow) => {
+    const inventory = steps(workflow, "quality").find((step) => step.with?.output);
+    inventory.with["vuln-type"] = "os";
+    inventory.with["skip-files"] = "usr/local/lib/node_modules/**";
+  });
+  expectError(
+    validate({ ciSource: mutated }),
+    "CI inventory inputs must exactly match the approved allowlist",
+  );
+});
+
+test("rejects a push script that overwrites the attested digest output", () => {
+  const mutated = mutate(publishSource, (workflow) => {
+    const push = steps(workflow, "publish").find((step) => step.id === "push");
+    push.run += '\necho "digest=sha256:0000000000000000000000000000000000000000000000000000000000000000" >> "$GITHUB_OUTPUT"';
+  });
+  expectError(
+    validate({ publishSource: mutated }),
+    "publish push script must exactly match the approved template",
+  );
 });
 
 test("rejects actions that are not pinned to a 40-character commit SHA", () => {

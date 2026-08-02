@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseDocument } from "yaml";
 
@@ -12,7 +13,255 @@ const workflowPaths = {
 const IMAGE_NAME = "ghcr.io/oliviaprel/fenshi-order-scheduling-mvp";
 const CI_IMAGE = `${IMAGE_NAME}:ci-\${{ github.sha }}`;
 const PUBLISH_IMAGE = `${IMAGE_NAME}:sha-\${{ github.sha }}`;
+const DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/fenshi_test";
+
+const ACTIONS = Object.freeze({
+  checkout: "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+  setupNode: "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+  setupBuildx: "docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f",
+  buildImage: "docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8",
+  sbom: "anchore/sbom-action@28d71544de8eaf1b958d335707167c5f783590ad",
+  trivy: "aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25",
+  uploadArtifact: "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+  login: "docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef",
+  attest: "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be",
+});
+
 const APPROVED_ACTION_PUBLISHERS = new Set(["actions", "docker", "anchore", "aquasecurity"]);
+
+const CI_SMOKE_SCRIPT = `
+set -Eeuo pipefail
+trap 'docker rm --force fenshi-ci >/dev/null 2>&1 || true' EXIT
+docker run --detach --name fenshi-ci --network host \\
+  --env APP_ORIGIN=http://127.0.0.1:3000 \\
+  --env DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/fenshi_test \\
+  "$IMAGE_REF"
+for attempt in {1..30}; do
+  if curl --fail --silent --show-error http://127.0.0.1:3000/api/health/ready; then
+    curl --fail --silent --show-error http://127.0.0.1:3000/api/health/live
+    exit 0
+  fi
+  echo "Waiting for container readiness (\${attempt}/30)"
+  sleep 2
+done
+docker logs fenshi-ci
+exit 1
+`;
+
+const PUBLISH_PUSH_SCRIPT = `
+set -Eeuo pipefail
+docker push "\${IMAGE_NAME}:sha-\${GITHUB_SHA}"
+docker push "\${IMAGE_NAME}:latest"
+image_digest="$(docker buildx imagetools inspect \\
+  --format '{{.Manifest.Digest}}' \\
+  "\${IMAGE_NAME}:sha-\${GITHUB_SHA}")"
+if [[ ! "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "Registry returned an invalid image digest" >&2
+  exit 1
+fi
+printf 'digest=%s\\n' "$image_digest" >> "$GITHUB_OUTPUT"
+`;
+
+const MIGRATION_ENV = Object.freeze({ MIGRATION_DATABASE_URL: DATABASE_URL });
+const RUNTIME_ENV = Object.freeze({ DATABASE_URL });
+
+const CI_STEP_CONTRACT = Object.freeze([
+  { name: "Check out source", id: "checkout", uses: ACTIONS.checkout },
+  {
+    name: "Set up Node.js",
+    id: "setup_node",
+    uses: ACTIONS.setupNode,
+    with: { "node-version": 22, cache: "npm" },
+  },
+  { name: "Install dependencies", id: "install_dependencies", run: "npm ci" },
+  {
+    name: "Validate workflow security invariants",
+    id: "validate_workflows",
+    run: "npm run test:workflows",
+  },
+  { id: "prisma_generate", run: "npm run prisma:generate", env: MIGRATION_ENV },
+  { id: "lint", run: "npm run lint" },
+  { id: "typecheck", run: "npm run typecheck" },
+  { id: "prisma_validate", run: "npm run prisma:validate", env: MIGRATION_ENV },
+  { id: "migrate", run: "npx prisma migrate deploy", env: MIGRATION_ENV },
+  { id: "unit_tests", run: "npm run test:unit", env: RUNTIME_ENV },
+  { id: "integration_tests", run: "npm run test:integration", env: RUNTIME_ENV },
+  { id: "install_playwright", run: "npx playwright install --with-deps chromium" },
+  {
+    id: "e2e_tests",
+    run: "npm run test:e2e",
+    env: {
+      DATABASE_URL,
+      APP_ORIGIN: "http://127.0.0.1:3000",
+      E2E_ADMIN_PHONE: "13900139000",
+      E2E_ADMIN_PASSWORD: "CI-only-admin-pass-2026!",
+      E2E_USER_PHONE: "13800138000",
+      E2E_USER_PASSWORD: "CI-only-user-temp-pass-2026!",
+      E2E_NEW_PASSWORD: "CI-only-user-new-pass-2026!",
+      E2E_INVALID_PASSWORD: "CI-only-wrong-pass-2026!",
+    },
+  },
+  {
+    id: "production_build",
+    run: "npm run build",
+    env: { APP_ORIGIN: "http://127.0.0.1:3000", DATABASE_URL },
+  },
+  { id: "production_audit", run: "npm audit --omit=dev --audit-level=high" },
+  { name: "Set up Docker Buildx", id: "setup_buildx", uses: ACTIONS.setupBuildx },
+  {
+    name: "Build local container image",
+    id: "build_image",
+    uses: ACTIONS.buildImage,
+    with: { context: ".", load: true, push: false, tags: CI_IMAGE },
+  },
+  {
+    name: "Smoke test the running container",
+    id: "container_smoke",
+    shell: "bash",
+    env: { IMAGE_REF: CI_IMAGE },
+    run: CI_SMOKE_SCRIPT,
+  },
+  {
+    name: "Generate SPDX JSON SBOM",
+    id: "generate_sbom",
+    uses: ACTIONS.sbom,
+    with: {
+      image: CI_IMAGE,
+      format: "spdx-json",
+      "output-file": "fenshi-ci.spdx.json",
+      "artifact-name": "fenshi-ci-sbom.spdx.json",
+    },
+  },
+  {
+    name: "Record complete High and Critical inventory",
+    id: "vulnerability_inventory",
+    uses: ACTIONS.trivy,
+    with: {
+      "image-ref": CI_IMAGE,
+      format: "json",
+      severity: "HIGH,CRITICAL",
+      "exit-code": "0",
+      "ignore-unfixed": false,
+      "vuln-type": "os,library",
+      output: "trivy-high-critical.json",
+    },
+  },
+  {
+    name: "Upload complete vulnerability inventory",
+    id: "upload_inventory",
+    uses: ACTIONS.uploadArtifact,
+    with: {
+      name: "fenshi-ci-vulnerabilities-${{ github.sha }}",
+      path: "trivy-high-critical.json",
+      "if-no-files-found": "error",
+    },
+  },
+  {
+    name: "Fail on fixable High and Critical vulnerabilities",
+    id: "vulnerability_gate",
+    uses: ACTIONS.trivy,
+    with: {
+      "image-ref": CI_IMAGE,
+      format: "table",
+      severity: "HIGH,CRITICAL",
+      "exit-code": "1",
+      "ignore-unfixed": true,
+      "vuln-type": "os,library",
+    },
+  },
+]);
+
+const PUBLISH_STEP_CONTRACT = Object.freeze([
+  { name: "Check out source", id: "checkout", uses: ACTIONS.checkout },
+  { name: "Set up Docker Buildx", id: "setup_buildx", uses: ACTIONS.setupBuildx },
+  {
+    name: "Build local image for security gates",
+    id: "build_image",
+    uses: ACTIONS.buildImage,
+    with: {
+      context: ".",
+      load: true,
+      push: false,
+      tags: `${PUBLISH_IMAGE}\n${IMAGE_NAME}:latest`,
+    },
+  },
+  {
+    name: "Generate downloadable SPDX JSON SBOM",
+    id: "generate_sbom",
+    uses: ACTIONS.sbom,
+    with: {
+      image: "${{ env.IMAGE_NAME }}:sha-${{ github.sha }}",
+      format: "spdx-json",
+      "output-file": "fenshi-image.spdx.json",
+      "artifact-name": "fenshi-image-${{ github.sha }}.spdx.json",
+    },
+  },
+  {
+    name: "Record complete High and Critical inventory",
+    id: "vulnerability_inventory",
+    uses: ACTIONS.trivy,
+    with: {
+      "image-ref": "${{ env.IMAGE_NAME }}:sha-${{ github.sha }}",
+      format: "json",
+      severity: "HIGH,CRITICAL",
+      "exit-code": "0",
+      "ignore-unfixed": false,
+      "vuln-type": "os,library",
+      output: "trivy-high-critical.json",
+    },
+  },
+  {
+    name: "Upload complete vulnerability inventory",
+    id: "upload_inventory",
+    uses: ACTIONS.uploadArtifact,
+    with: {
+      name: "fenshi-image-vulnerabilities-${{ github.sha }}",
+      path: "trivy-high-critical.json",
+      "if-no-files-found": "error",
+    },
+  },
+  {
+    name: "Fail on fixable High and Critical vulnerabilities",
+    id: "vulnerability_gate",
+    uses: ACTIONS.trivy,
+    with: {
+      "image-ref": "${{ env.IMAGE_NAME }}:sha-${{ github.sha }}",
+      format: "table",
+      severity: "HIGH,CRITICAL",
+      "exit-code": "1",
+      "ignore-unfixed": true,
+      "vuln-type": "os,library",
+    },
+  },
+  {
+    name: "Log in to GHCR",
+    id: "registry_login",
+    uses: ACTIONS.login,
+    with: {
+      registry: "ghcr.io",
+      username: "${{ github.actor }}",
+      password: "${{ secrets.GITHUB_TOKEN }}",
+    },
+  },
+  { name: "Push the scanned image", id: "push", shell: "bash", run: PUBLISH_PUSH_SCRIPT },
+  {
+    name: "Attest published image provenance",
+    id: "attest_provenance",
+    uses: ACTIONS.attest,
+    with: {
+      "subject-name": "${{ env.IMAGE_NAME }}",
+      "subject-digest": "${{ steps.push.outputs.digest }}",
+      "push-to-registry": true,
+    },
+  },
+  {
+    name: "Record immutable image reference",
+    id: "record_image_reference",
+    shell: "bash",
+    env: { IMAGE_DIGEST: "${{ steps.push.outputs.digest }}" },
+    run: "echo \"Published ${IMAGE_NAME}@${IMAGE_DIGEST}\" >> \"$GITHUB_STEP_SUMMARY\"",
+  },
+]);
 
 function scalar(value) {
   return value === undefined || value === null ? "" : String(value);
@@ -31,7 +280,7 @@ function exactStringArray(value, expected) {
 function exactPermissions(value, expected) {
   const actualEntries = entries(value).sort(([left], [right]) => left.localeCompare(right));
   const expectedEntries = Object.entries(expected).sort(([left], [right]) => left.localeCompare(right));
-  return JSON.stringify(actualEntries) === JSON.stringify(expectedEntries);
+  return isDeepStrictEqual(actualEntries, expectedEntries);
 }
 
 function parseWorkflow(name, source, errors) {
@@ -62,10 +311,47 @@ function normalizeImage(value) {
   return scalar(value).replace("${{ env.IMAGE_NAME }}", IMAGE_NAME);
 }
 
-function commandSteps(steps, pattern) {
-  return steps
-    .map((step, index) => ({ step, index, run: scalar(step?.run) }))
-    .filter(({ run }) => pattern.test(run));
+function normalizeScript(value) {
+  return scalar(value)
+    .replaceAll("\r\n", "\n")
+    .split("\n")
+    .map((line) => line.trim().replace(/[ \t]+/g, " "))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function normalizeLineList(value) {
+  return scalar(value)
+    .replaceAll("\r\n", "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function canonicalStep(step) {
+  const canonical = structuredClone(step);
+  if (canonical && Object.hasOwn(canonical, "run")) canonical.run = normalizeScript(canonical.run);
+  if (canonical?.with && Object.hasOwn(canonical.with, "tags")) {
+    canonical.with.tags = normalizeLineList(canonical.with.tags);
+  }
+  return canonical;
+}
+
+function validateStepContract(name, steps, contract, errors) {
+  const actualShape = steps.map((step) => ({
+    id: step?.id,
+    type: step?.uses ? "action" : step?.run ? "run" : "invalid",
+  }));
+  const expectedShape = contract.map((step) => ({
+    id: step.id,
+    type: step.uses ? "action" : "run",
+  }));
+  const exactSteps = steps.map(canonicalStep);
+  const exactContract = contract.map(canonicalStep);
+  if (!isDeepStrictEqual(actualShape, expectedShape) || !isDeepStrictEqual(exactSteps, exactContract)) {
+    errors.push(`${name} steps must exactly match the approved sequence, types, fields, and inputs`);
+  }
 }
 
 function findNamedProperties(value, propertyName, trail = []) {
@@ -98,14 +384,18 @@ function validateActions(workflowName, workflow, errors) {
   }
 }
 
+function containsSecretsContext(value) {
+  return /\bsecrets\s*(?:\.|\[\s*(['"])[^'"]+\1\s*\])/i.test(value);
+}
+
 function findSecrets(value, trail = []) {
   const found = [];
-  if (typeof value === "string" && /\bsecrets\s*\./i.test(value)) found.push(trail.join("."));
+  if (typeof value === "string" && containsSecretsContext(value)) found.push(trail.join("."));
   if (Array.isArray(value)) {
     value.forEach((item, index) => found.push(...findSecrets(item, [...trail, String(index)])));
   } else if (value && typeof value === "object") {
     for (const [key, item] of Object.entries(value)) {
-      if (/\bsecrets\s*\./i.test(key)) found.push([...trail, key].join("."));
+      if (containsSecretsContext(key)) found.push([...trail, key].join("."));
       found.push(...findSecrets(item, [...trail, key]));
     }
   }
@@ -120,7 +410,7 @@ function validateTriggers(name, workflow, expected, errors) {
   }
   const actualNames = Object.keys(triggers).sort();
   const expectedNames = Object.keys(expected).sort();
-  if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
+  if (!isDeepStrictEqual(actualNames, expectedNames)) {
     errors.push(`${name} triggers must be exactly ${expectedNames.join(" and ")}`);
   }
   for (const [triggerName, branches] of Object.entries(expected)) {
@@ -146,7 +436,7 @@ function validateDatabaseSteps(steps, errors) {
     }
   }
 
-  const e2e = steps.find((candidate) => scalar(candidate?.run).trim() === "npm run test:e2e");
+  const e2e = steps.find((candidate) => candidate?.id === "e2e_tests");
   const credentialKeys = [
     "E2E_ADMIN_PHONE",
     "E2E_ADMIN_PASSWORD",
@@ -169,64 +459,79 @@ function validateDatabaseSteps(steps, errors) {
   }
 }
 
-function validateImageSecurityChain(name, steps, expectedImage, errors) {
-  const sbomMatches = findActionSteps(steps, "anchore/sbom-action");
-  if (sbomMatches.length !== 1) {
+function validateExactInputs(name, role, actual, expected, errors) {
+  if (!isDeepStrictEqual(actual, expected)) {
+    errors.push(`${name} ${role} inputs must exactly match the approved allowlist`);
+  }
+}
+
+function validateImageSecurityChain(name, steps, expectedImage, expectedContract, errors) {
+  const expectedById = new Map(expectedContract.map((step) => [step.id, step]));
+  const sbom = steps.find((step) => step?.id === "generate_sbom");
+  if (!sbom || actionName(sbom) !== "anchore/sbom-action") {
     errors.push(`${name} must contain exactly one SBOM step`);
   } else {
-    const { step } = sbomMatches[0];
-    if (scalar(step.with?.format) !== "spdx-json") errors.push(`${name} SBOM must use SPDX JSON`);
-    if (normalizeImage(step.with?.image) !== expectedImage) {
+    if (scalar(sbom.with?.format) !== "spdx-json") errors.push(`${name} SBOM must use SPDX JSON`);
+    if (normalizeImage(sbom.with?.image) !== expectedImage) {
       errors.push(`${name} SBOM image must match the scanned build image`);
     }
   }
 
-  const trivy = findActionSteps(steps, "aquasecurity/trivy-action");
-  const inventoryMatches = trivy.filter(({ step }) => scalar(step.with?.output));
-  const gateMatches = trivy.filter(({ step }) => scalar(step.with?.["exit-code"]) === "1");
-  if (inventoryMatches.length !== 1) errors.push(`${name} must contain exactly one vulnerability inventory step`);
-  if (gateMatches.length !== 1) errors.push(`${name} must contain exactly one vulnerability gate step`);
-
-  const inventory = inventoryMatches[0];
-  const gate = gateMatches[0];
-  if (inventory) {
-    const settings = inventory.step.with ?? {};
-    if (scalar(settings.format) !== "json") errors.push(`${name} inventory must use JSON`);
-    if (scalar(settings.severity) !== "CRITICAL,HIGH") errors.push(`${name} inventory must cover CRITICAL,HIGH`);
-    if (scalar(settings["exit-code"]) !== "0") errors.push(`${name} inventory must use exit-code 0`);
-    if (settings["ignore-unfixed"] !== false) errors.push(`${name} inventory must include unfixed findings`);
-    if (normalizeImage(settings["image-ref"]) !== expectedImage) {
+  const inventory = steps.find((step) => step?.id === "vulnerability_inventory");
+  const gate = steps.find((step) => step?.id === "vulnerability_gate");
+  if (!inventory || actionName(inventory) !== "aquasecurity/trivy-action") {
+    errors.push(`${name} must contain exactly one vulnerability inventory step`);
+  } else {
+    validateExactInputs(
+      name,
+      "inventory",
+      inventory.with,
+      expectedById.get("vulnerability_inventory").with,
+      errors,
+    );
+    if (inventory.with?.["ignore-unfixed"] !== false) {
+      errors.push(`${name} inventory must include unfixed findings`);
+    }
+    if (normalizeImage(inventory.with?.["image-ref"]) !== expectedImage) {
       errors.push(`${name} inventory image must match the scanned build image`);
     }
   }
-  if (gate) {
-    const settings = gate.step.with ?? {};
-    if (scalar(settings.format) !== "table") errors.push(`${name} gate must use table output`);
-    if (scalar(settings.severity) !== "CRITICAL,HIGH") errors.push(`${name} gate must cover CRITICAL,HIGH`);
-    if (settings["ignore-unfixed"] !== true) errors.push(`${name} gate must ignore unfixed findings`);
-    if (normalizeImage(settings["image-ref"]) !== expectedImage) {
+  if (!gate || actionName(gate) !== "aquasecurity/trivy-action") {
+    errors.push(`${name} must contain exactly one vulnerability gate step`);
+  } else {
+    validateExactInputs(
+      name,
+      "gate",
+      gate.with,
+      expectedById.get("vulnerability_gate").with,
+      errors,
+    );
+    if (gate.with?.["ignore-unfixed"] !== true) {
+      errors.push(`${name} gate must ignore unfixed findings`);
+    }
+    if (normalizeImage(gate.with?.["image-ref"]) !== expectedImage) {
       errors.push(`${name} gate image must match the scanned build image`);
     }
   }
 
-  const uploads = findActionSteps(steps, "actions/upload-artifact");
-  if (uploads.length !== 1) {
+  const upload = steps.find((step) => step?.id === "upload_inventory");
+  if (!upload || actionName(upload) !== "actions/upload-artifact") {
     errors.push(`${name} inventory artifact upload step is required exactly once`);
   } else if (inventory) {
-    const upload = uploads[0];
-    const output = scalar(inventory.step.with?.output);
-    if (!output || scalar(upload.step.with?.path) !== output) {
+    const output = scalar(inventory.with?.output);
+    if (!output || scalar(upload.with?.path) !== output) {
       errors.push(`${name} artifact path must exactly match inventory output`);
     }
-    if (upload.step.with?.["if-no-files-found"] !== "error") {
+    if (upload.with?.["if-no-files-found"] !== "error") {
       errors.push(`${name} artifact upload must fail when the inventory file is absent`);
     }
-    if (!(inventory.index < upload.index && (!gate || upload.index < gate.index))) {
+    const inventoryIndex = steps.indexOf(inventory);
+    const uploadIndex = steps.indexOf(upload);
+    const gateIndex = steps.indexOf(gate);
+    if (!(inventoryIndex < uploadIndex && uploadIndex < gateIndex)) {
       errors.push(`${name} inventory artifact must be uploaded after inventory and before the gate`);
     }
   }
-
-  return { gateIndex: gate?.index ?? -1 };
 }
 
 function validateCi(workflow, errors) {
@@ -234,8 +539,9 @@ function validateCi(workflow, errors) {
   if (!exactPermissions(workflow.permissions, { contents: "read" })) {
     errors.push("CI permissions must be exactly contents: read");
   }
-  const secretLocations = findSecrets(workflow);
-  for (const location of secretLocations) errors.push(`CI must not reference secrets. (found at ${location})`);
+  for (const location of findSecrets(workflow)) {
+    errors.push(`CI must not reference secrets. (found at ${location})`);
+  }
 
   const jobs = entries(workflow.jobs);
   if (jobs.length !== 1 || jobs[0][0] !== "quality") errors.push("CI must contain exactly the quality job");
@@ -245,40 +551,23 @@ function validateCi(workflow, errors) {
     }
   }
   const steps = Array.isArray(workflow.jobs?.quality?.steps) ? workflow.jobs.quality.steps : [];
+  validateStepContract("CI", steps, CI_STEP_CONTRACT, errors);
   validateDatabaseSteps(steps, errors);
 
-  for (const { step } of findActionSteps(steps, "docker/login-action")) {
-    errors.push(`CI must not authenticate to a registry (${step.name ?? "unnamed step"})`);
-  }
-  for (const { step } of commandSteps(steps, /\bdocker\s+(?:login|push)\b/)) {
-    errors.push(`CI must not run docker login or push (${step.name ?? "unnamed step"})`);
-  }
-  for (const step of steps) {
-    if (step?.with?.push === true || scalar(step?.with?.push) === "true") {
-      errors.push(`CI must not enable action-based image pushes (${step.name ?? "unnamed step"})`);
-    }
-  }
-  if (findActionSteps(steps, "actions/attest-build-provenance").length > 0) {
-    errors.push("CI must not create registry attestations");
-  }
-
-  const builds = findActionSteps(steps, "docker/build-push-action");
-  if (builds.length !== 1) {
+  const build = steps.find((step) => step?.id === "build_image");
+  if (!build || actionName(build) !== "docker/build-push-action") {
     errors.push("CI must contain exactly one container build step");
   } else {
-    const settings = builds[0].step.with ?? {};
-    if (settings.load !== true) errors.push("CI container build must set load: true");
-    if (settings.push !== false) errors.push("CI container build must set push: false");
-    if (scalar(settings.tags).trim() !== CI_IMAGE) errors.push("CI must build the canonical CI image tag");
+    if (build.with?.load !== true) errors.push("CI container build must set load: true");
+    if (build.with?.push !== false) errors.push("CI container build must set push: false");
+    if (scalar(build.with?.tags).trim() !== CI_IMAGE) errors.push("CI must build the canonical CI image tag");
   }
 
-  const smokes = commandSteps(steps, /\bdocker\s+run\b/);
-  if (smokes.length !== 1
-    || !/\/api\/health\/ready\b/.test(smokes[0].run)
-    || !/\/api\/health\/live\b/.test(smokes[0].run)) {
-    errors.push("CI must run the built container and check both ready and live health endpoints");
+  const smoke = steps.find((step) => step?.id === "container_smoke");
+  if (!smoke || normalizeScript(smoke.run) !== normalizeScript(CI_SMOKE_SCRIPT)) {
+    errors.push("CI container smoke script must exactly match the approved template");
   }
-  validateImageSecurityChain("CI", steps, CI_IMAGE, errors);
+  validateImageSecurityChain("CI", steps, CI_IMAGE, CI_STEP_CONTRACT, errors);
 }
 
 function validatePublish(workflow, errors) {
@@ -301,55 +590,52 @@ function validatePublish(workflow, errors) {
     }
   }
   const steps = Array.isArray(workflow.jobs?.publish?.steps) ? workflow.jobs.publish.steps : [];
-  const builds = findActionSteps(steps, "docker/build-push-action");
-  if (builds.length !== 1) {
+  validateStepContract("publish", steps, PUBLISH_STEP_CONTRACT, errors);
+
+  const build = steps.find((step) => step?.id === "build_image");
+  if (!build || actionName(build) !== "docker/build-push-action") {
     errors.push("publish workflow must contain exactly one image build step");
   } else {
-    const settings = builds[0].step.with ?? {};
-    const tags = scalar(settings.tags).split(/\r?\n/).map((tag) => tag.trim()).filter(Boolean);
-    if (settings.load !== true) errors.push("publish build must set load: true");
-    if (settings.push !== false) errors.push("publish build must set push: false");
+    const tags = normalizeLineList(build.with?.tags).split("\n");
+    if (build.with?.load !== true) errors.push("publish build must set load: true");
+    if (build.with?.push !== false) errors.push("publish build must set push: false");
     if (!exactStringArray(tags, [PUBLISH_IMAGE, `${IMAGE_NAME}:latest`])) {
       errors.push("publish build tags must be exactly the full-sha tag and latest");
     }
   }
 
-  const { gateIndex } = validateImageSecurityChain("publish", steps, PUBLISH_IMAGE, errors);
-  const logins = findActionSteps(steps, "docker/login-action");
-  if (logins.length !== 1) errors.push("publish workflow must contain exactly one GHCR login step");
-  for (const { index } of logins) {
+  validateImageSecurityChain("publish", steps, PUBLISH_IMAGE, PUBLISH_STEP_CONTRACT, errors);
+
+  const gateIndex = steps.findIndex((step) => step?.id === "vulnerability_gate");
+  for (const { index } of findActionSteps(steps, "docker/login-action")) {
     if (index <= gateIndex) errors.push("publish registry login must occur after the vulnerability gate");
   }
-  const pushes = commandSteps(steps, /\bdocker\s+push\b/);
-  if (pushes.length !== 1) errors.push("publish workflow must contain exactly one push step");
-  for (const { index } of pushes) {
-    if (index <= gateIndex) errors.push("publish docker push must occur after the vulnerability gate");
+
+  const push = steps.find((step) => step?.id === "push");
+  if (!push || normalizeScript(push.run) !== normalizeScript(PUBLISH_PUSH_SCRIPT)) {
+    errors.push("publish push script must exactly match the approved template");
+  }
+  if (push && steps.indexOf(push) <= gateIndex) {
+    errors.push("publish push step must occur after the vulnerability gate");
   }
 
-  const push = pushes[0]?.step;
-  const pushRun = scalar(push?.run);
-  if (push?.id !== "push"
-    || !/docker push "\$\{IMAGE_NAME\}:sha-\$\{GITHUB_SHA\}"/.test(pushRun)
-    || !/docker push "\$\{IMAGE_NAME\}:latest"/.test(pushRun)
-    || !/echo "digest=\$image_digest" >> "\$GITHUB_OUTPUT"/.test(pushRun)) {
-    errors.push("publish push step must push full-sha and latest tags and expose the registry digest");
-  }
-
-  const attestations = findActionSteps(steps, "actions/attest-build-provenance");
-  if (attestations.length !== 1) {
+  const attest = steps.find((step) => step?.id === "attest_provenance");
+  if (!attest || actionName(attest) !== "actions/attest-build-provenance") {
     errors.push("publish workflow must contain exactly one provenance attestation step");
   } else {
-    const { step, index } = attestations[0];
-    if (scalar(step.with?.["subject-name"]) !== "${{ env.IMAGE_NAME }}") {
+    if (scalar(attest.with?.["subject-name"]) !== "${{ env.IMAGE_NAME }}") {
       errors.push("publish attestation subject-name must be the canonical image name");
     }
-    if (scalar(step.with?.["subject-digest"]) !== "${{ steps.push.outputs.digest }}") {
+    if (scalar(attest.with?.["subject-digest"]) !== "${{ steps.push.outputs.digest }}") {
       errors.push("publish attestation subject-digest must use the pushed digest output");
     }
-    if (step.with?.["push-to-registry"] !== true) errors.push("publish attestation must be pushed to the registry");
-    if (pushes[0] && index <= pushes[0].index) errors.push("publish attestation must occur after the image push");
+    if (attest.with?.["push-to-registry"] !== true) {
+      errors.push("publish attestation must be pushed to the registry");
+    }
+    if (push && steps.indexOf(attest) <= steps.indexOf(push)) {
+      errors.push("publish attestation must occur after the image push");
+    }
   }
-
 }
 
 export function validateWorkflows({ ciSource, publishSource }) {

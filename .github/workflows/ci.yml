@@ -35,35 +35,48 @@ jobs:
 
     steps:
       - name: Check out source
+        id: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Set up Node.js
+        id: setup_node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
       - name: Install dependencies
+        id: install_dependencies
         run: npm ci
       - name: Validate workflow security invariants
+        id: validate_workflows
         run: npm run test:workflows
       - run: npm run prisma:generate
         env:
           MIGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
-      - run: npm run lint
-      - run: npm run typecheck
+        id: prisma_generate
+      - id: lint
+        run: npm run lint
+      - id: typecheck
+        run: npm run typecheck
       - run: npm run prisma:validate
         env:
           MIGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
+        id: prisma_validate
       - run: npx prisma migrate deploy
         env:
           MIGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
-      - run: npm run test:unit
+        id: migrate
+      - id: unit_tests
+        run: npm run test:unit
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
-      - run: npm run test:integration
+      - id: integration_tests
+        run: npm run test:integration
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
+      - id: install_playwright
+        run: npx playwright install --with-deps chromium
+      - id: e2e_tests
+        run: npm run test:e2e
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
           APP_ORIGIN: http://127.0.0.1:3000
@@ -74,15 +87,19 @@ jobs:
           E2E_USER_PASSWORD: CI-only-user-temp-pass-2026!
           E2E_NEW_PASSWORD: CI-only-user-new-pass-2026!
           E2E_INVALID_PASSWORD: CI-only-wrong-pass-2026!
-      - run: npm run build
+      - id: production_build
+        run: npm run build
         env:
           APP_ORIGIN: http://127.0.0.1:3000
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
-      - run: npm audit --omit=dev --audit-level=high
+      - id: production_audit
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Set up Docker Buildx
+        id: setup_buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Build local container image
+        id: build_image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
@@ -90,6 +107,7 @@ jobs:
           push: false
           tags: ghcr.io/oliviaprel/fenshi-order-scheduling-mvp:ci-${{ github.sha }}
       - name: Smoke test the running container
+        id: container_smoke
         shell: bash
         env:
           IMAGE_REF: ghcr.io/oliviaprel/fenshi-order-scheduling-mvp:ci-${{ github.sha }}
@@ -111,6 +129,7 @@ jobs:
           docker logs fenshi-ci
           exit 1
       - name: Generate SPDX JSON SBOM
+        id: generate_sbom
         uses: anchore/sbom-action@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
         with:
           image: ghcr.io/oliviaprel/fenshi-order-scheduling-mvp:ci-${{ github.sha }}
@@ -118,27 +137,30 @@ jobs:
           output-file: fenshi-ci.spdx.json
           artifact-name: fenshi-ci-sbom.spdx.json
       - name: Record complete High and Critical inventory
+        id: vulnerability_inventory
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ghcr.io/oliviaprel/fenshi-order-scheduling-mvp:ci-${{ github.sha }}
           format: json
-          severity: CRITICAL,HIGH
+          severity: HIGH,CRITICAL
           exit-code: '0'
           ignore-unfixed: false
           vuln-type: os,library
           output: trivy-high-critical.json
       - name: Upload complete vulnerability inventory
+        id: upload_inventory
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fenshi-ci-vulnerabilities-${{ github.sha }}
           path: trivy-high-critical.json
           if-no-files-found: error
       - name: Fail on fixable High and Critical vulnerabilities
+        id: vulnerability_gate
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ghcr.io/oliviaprel/fenshi-order-scheduling-mvp:ci-${{ github.sha }}
           format: table
-          severity: CRITICAL,HIGH
+          severity: HIGH,CRITICAL
           exit-code: '1'
           ignore-unfixed: true
           vuln-type: os,library
