@@ -121,28 +121,29 @@ MIGRATION_DATABASE_URL='postgresql://fenshi_migrator:URL编码密码@私网VIP:5
 ## 3. 首次发布
 
 1. 将与镜像 digest 对应的源码提交检出到 `/opt/fenshi/release`，确认 `git status --short` 为空。
-2. 在受控终端加载 Secret，不要启用 shell trace：
+2. 在受控终端仅读取当前命令需要的 Secret，不要启用 shell trace。依赖安装必须在没有生产 Secret 的环境中运行：
 
    ```bash
-   set +x
-   set -a
-   . /etc/fenshi/app.env
-   set +a
    cd /opt/fenshi/release
-   npm ci
-   npm run prisma:generate
+   env -u DATABASE_URL -u OPERATIONS_DATABASE_URL -u MIGRATION_DATABASE_URL npm ci
+   set +x
+   MIGRATION_DATABASE_URL="$(sudo sed -n "s/^MIGRATION_DATABASE_URL='\(.*\)'$/\1/p" /etc/fenshi/app.env)"
+   MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" npm run prisma:generate
    ```
 
 3. **先迁移，后启动新镜像**。容器入口不会自动迁移，也不得把破坏性迁移放入启动命令：
 
    ```bash
    MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" npx prisma migrate deploy
+   MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" psql -v ON_ERROR_STOP=1 -f docs/runbooks/postgresql-runtime-hardening.sql
    ```
 
 4. 首次且仅首次，在仍未开放业务流量时以交互式 TTY 创建管理员：
 
    ```bash
+   OPERATIONS_DATABASE_URL="$(sudo sed -n "s/^OPERATIONS_DATABASE_URL='\(.*\)'$/\1/p" /etc/fenshi/app.env)"
    DATABASE_URL="$OPERATIONS_DATABASE_URL" npm run admin:create
+   unset MIGRATION_DATABASE_URL OPERATIONS_DATABASE_URL
    ```
 
    密码应由密码管理器生成，在隐藏提示中输入；不得作为参数、环境变量或日志内容。普通用户只能由管理员登录后创建。
@@ -159,15 +160,16 @@ MIGRATION_DATABASE_URL='postgresql://fenshi_migrator:URL编码密码@私网VIP:5
    ```bash
    curl --fail --silent --show-error https://orders.example.com/api/health/live
    test "$(curl --silent --output /dev/null --write-out '%{http_code}' https://orders.example.com/api/health/ready)" = "404"
+   test "$(sudo docker compose --env-file /etc/fenshi/app.env -f compose.production.example.yaml exec -T app node -e \"fetch('http://127.0.0.1:3000/api/health/ready').then(r=>process.stdout.write(String(r.status)))\")" = "200"
    sudo docker compose --env-file /etc/fenshi/app.env -f compose.production.example.yaml ps
    ```
 
-   公网 `live` 应返回 HTTP 200 和 `{"status":"ok"}`；公网 `ready` 必须返回 HTTP 404。Compose 健康检查直接通过 `app:3000/api/health/ready` 访问应用。再用管理员和一个合成普通用户完成登录、强制改密和退出烟测；不要使用真实客户数据。
+   三重门槛必须同时满足：`external live=200`、`external ready=404`、`internal ready=200`。再用管理员和一个合成普通用户完成登录、强制改密和退出烟测；不要使用真实客户数据。
 
 ## 4. 后续发布
 
 1. 保存当前 `APP_IMAGE` digest 为回滚候选，确认其仍可从镜像仓库拉取。
-2. 在新版本源码上依次运行 `npm ci`、全量质量门禁和 `MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" npx prisma migrate deploy`。
+2. 在新版本源码上依次运行无生产 Secret 的 `env -u DATABASE_URL -u OPERATIONS_DATABASE_URL -u MIGRATION_DATABASE_URL npm ci`、全量质量门禁、迁移，并在每次迁移后运行同一个 `docs/runbooks/postgresql-runtime-hardening.sql`；完成后 `unset MIGRATION_DATABASE_URL OPERATIONS_DATABASE_URL`。
 3. 只有迁移成功后，才把 `/etc/fenshi/app.env` 的 `APP_IMAGE` 更新为新 digest并运行 `docker compose pull && docker compose up -d`。
 4. 检查 live、ready、容器状态和登录烟测；记录提交 SHA、镜像 digest、迁移编号、操作者和时间。
 

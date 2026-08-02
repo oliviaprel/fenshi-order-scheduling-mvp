@@ -10,7 +10,7 @@
 
 1. 创建受控事件记录，写明发现时间、报告人、影响、当前版本/镜像 digest；指定指挥官。
 2. 冻结非必要发布和迁移。不要删除容器、日志、数据库记录或备份。
-3. 从外部和 CVM 内部分别检查 `/api/health/live`、`/api/health/ready`，记录 HTTP 状态、request ID 和时间。
+3. 执行三重门槛并记录状态、request ID 和时间：`external live=200`、`external ready=404`、`internal ready=200`。内部检查必须使用 `docker compose --env-file /etc/fenshi/app.env -f compose.production.example.yaml exec -T app node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(r=>process.exit(r.status===200?0:1))"`。
 4. 限制影响面：可在 Caddy/安全组临时阻断业务流量，但保留受控运维访问；不要开放数据库公网地址。
 
 ## 账号与 Session 处置
@@ -53,6 +53,6 @@ COMMIT;
 ## 恢复、通知与结束
 
 1. 采用最小变更恢复：回滚到上一镜像按[部署手册](deploy-tencent-cloud.md#5-回滚到上一镜像)执行；数据恢复只允许克隆到新隔离实例并校验后切换。
-2. 恢复流量前必须同时满足 live/ready 200、迁移状态正常、管理员和普通用户登录成功、相关账号/旧 Session/旧凭据已失效。
+2. 恢复流量前必须同时满足 `external live=200`、`external ready=404`、`internal ready=200`，并确认迁移状态正常、管理员和普通用户登录成功、相关账号/旧 Session/旧凭据已失效。
 3. 安全/合规负责人根据是否存在个人信息或凭据暴露、受影响人数/地区、证据可信度和法定时限，书面决定是否通知监管方和用户。对外内容应说明影响、时间范围、已采取措施和用户动作，不披露攻击细节或其他用户数据。
 4. 事件结束后 48 小时内完成时间线、根因、影响范围、RPO/RTO、证据链接、改进项、负责人和截止日期；确认临时安全组规则已撤销，但证据和备份按策略保留。

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import net from "node:net";
 
 import pg from "pg";
@@ -72,13 +73,6 @@ async function verifyRuntimeRole(port) {
       { rolname: "fenshi_migrator", rolsuper: false, rolcreatedb: false, rolcreaterole: false },
     ]);
 
-    const migrations = await client.query(
-      `SELECT migration_name FROM "_prisma_migrations"
-        WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL
-        ORDER BY migration_name`,
-    );
-    assert.equal(migrations.rowCount, 4, "all four committed migrations must be applied");
-
     const inserted = await client.query(
       `INSERT INTO "User"
         (id, role, "displayName", phone, "passwordHash", status, "mustChangePassword", version, "createdAt", "updatedAt")
@@ -110,6 +104,19 @@ async function verifyRuntimeRole(port) {
       "CREATE TEMP TABLE role_smoke_temp_must_fail (id integer)",
       "temporary DDL",
     );
+    const migrationPrivileges = await client.query(`
+      SELECT
+        has_table_privilege(current_user, '"_prisma_migrations"', 'SELECT') AS "select",
+        has_table_privilege(current_user, '"_prisma_migrations"', 'INSERT') AS "insert",
+        has_table_privilege(current_user, '"_prisma_migrations"', 'UPDATE') AS "update",
+        has_table_privilege(current_user, '"_prisma_migrations"', 'DELETE') AS "delete"
+    `);
+    assert.deepEqual(migrationPrivileges.rows[0], {
+      select: false,
+      insert: false,
+      update: false,
+      delete: false,
+    });
   } finally {
     await client.query(`DELETE FROM "User" WHERE id = $1`, [id]).catch(() => undefined);
     await client.end();
@@ -130,6 +137,22 @@ try {
       MIGRATION_DATABASE_URL: `postgresql://fenshi_migrator:fenshi_migrator_dev@127.0.0.1:${port}/fenshi`,
     },
   });
+
+  const migrator = new Client({
+    connectionString: `postgresql://fenshi_migrator:fenshi_migrator_dev@127.0.0.1:${port}/fenshi`,
+  });
+  await migrator.connect();
+  try {
+    const migrations = await migrator.query(
+      `SELECT migration_name FROM "_prisma_migrations"
+        WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL`,
+    );
+    assert.equal(migrations.rowCount, 4, "all four committed migrations must be applied");
+    const hardeningSql = await readFile("docs/runbooks/postgresql-runtime-hardening.sql", "utf8");
+    await migrator.query(hardeningSql.replace(/^\\set ON_ERROR_STOP on\s*/m, ""));
+  } finally {
+    await migrator.end();
+  }
 
   await verifyRuntimeRole(port);
   console.log("Fresh split-role database smoke passed: roles, 4 migrations, CRUD, and DDL denials verified.");
