@@ -2,6 +2,11 @@
 
 第一阶段提供手机号/密码登录、强制改密、会话、管理员用户管理、审计记录与登录限流，并附带生产健康检查、容器样例和腾讯云运行手册。
 
+> **生产状态（2026-08-02）：尚未获准上线。** Stage 1 的本地代码与容器门禁已完成，
+> 但真实腾讯云隔离恢复演练、`master` 上的 GitHub 发布工作流、公开 GHCR 包、线上
+> provenance 验证及 GitHub ruleset 仍需在外部环境完成并留证。完整订单排期业务也仍在后续阶段。
+> 详见 [Stage 1 加固证据](docs/reviews/stage-1-production-hardening.md)。
+
 ## 本地启动
 
 要求 Node.js 22、Docker Desktop 和 npm。复制 `.env.example` 为不提交的 `.env`，然后执行：
