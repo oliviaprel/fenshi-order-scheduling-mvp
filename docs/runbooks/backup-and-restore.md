@@ -27,7 +27,7 @@
 
 ## 执行演练
 
-1. 将应用指向源演练实例，运行 `npx prisma migrate deploy`。交互运行 `npm run admin:create` 创建合成管理员，再从管理页面创建合成普通用户并完成一次登录。
+1. 将应用指向源演练实例，以独立迁移账号运行 `MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" npx prisma migrate deploy`。交互运行 `npm run admin:create` 创建合成管理员，再从管理页面创建合成普通用户并完成一次登录。
 2. 记录源端基线，不得导出密码字段：
 
    ```sql
@@ -52,19 +52,20 @@
    test -r "$RESTORE_CA_FILE" || { echo "克隆实例 CA 不可读" >&2; exit 1; }
    ```
 
-   从密码管理器粘贴两条只指向**克隆私网地址**的 URL；第一条供容器使用，CA 路径必须是 `/run/secrets/restore-postgresql-ca.pem`，第二条供宿主命令使用，CA 路径必须是 `$RESTORE_CA_FILE`。不得复用生产 `DATABASE_URL`、`/etc/fenshi/app.env` 或生产 app 容器。
+   从密码管理器粘贴三条只指向**克隆私网地址**的 URL；第一条供容器中的应用账号使用，CA 路径必须是 `/run/secrets/restore-postgresql-ca.pem`；第二条供宿主上的应用账号命令使用；第三条只供宿主 Prisma 迁移账号使用，二者的 CA 路径必须是 `$RESTORE_CA_FILE`。不得复用生产 `DATABASE_URL`、`MIGRATION_DATABASE_URL`、`/etc/fenshi/app.env` 或生产 app 容器。
 
    ```bash
    read -r -s -p "克隆库容器 DATABASE_URL: " RESTORE_DATABASE_URL; printf '\n'
    read -r -s -p "克隆库宿主 OPERATIONS_DATABASE_URL: " RESTORE_OPERATIONS_DATABASE_URL; printf '\n'
-   export RESTORE_DATABASE_URL RESTORE_OPERATIONS_DATABASE_URL
+   read -r -s -p "克隆库宿主 MIGRATION_DATABASE_URL: " RESTORE_MIGRATION_DATABASE_URL; printf '\n'
+   export RESTORE_DATABASE_URL RESTORE_OPERATIONS_DATABASE_URL RESTORE_MIGRATION_DATABASE_URL
    # URL 形状：postgresql://用户:URL编码密码@克隆私网VIP:5432/fenshi?sslmode=verify-full&sslrootcert=对应CA绝对路径
    ```
 
 6. 在发布源码目录用宿主专用 URL 验证迁移状态并运行同一组只读计数：
 
    ```bash
-   DATABASE_URL="$RESTORE_OPERATIONS_DATABASE_URL" npx prisma migrate status
+   MIGRATION_DATABASE_URL="$RESTORE_MIGRATION_DATABASE_URL" npx prisma migrate status
    psql "$RESTORE_OPERATIONS_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT "role", count(*) FROM "User" GROUP BY "role" ORDER BY "role";'
    psql "$RESTORE_OPERATIONS_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT count(*) AS session_count FROM "Session";'
    ```
@@ -179,7 +180,7 @@
    ```bash
    cleanup_restore_app
    trap - EXIT
-   unset RESTORE_DATABASE_URL RESTORE_OPERATIONS_DATABASE_URL RESTORE_APP_IMAGE RESTORE_APP_PORT RESTORE_ORIGIN RESTORE_PROJECT RESTORE_COMPOSE_FILE RESTORE_CADDY_FILE RESTORE_CADDY_CA_FILE
+   unset RESTORE_DATABASE_URL RESTORE_OPERATIONS_DATABASE_URL RESTORE_MIGRATION_DATABASE_URL RESTORE_APP_IMAGE RESTORE_APP_PORT RESTORE_ORIGIN RESTORE_PROJECT RESTORE_COMPOSE_FILE RESTORE_CADDY_FILE RESTORE_CADDY_CA_FILE
    ```
 
    确认演练容器和网络已消失、生产 app 仍在运行。只有负责人签字且记录完整后，才可按腾讯云变更流程销毁临时克隆实例；销毁前再次核对目标实例 ID 与生产实例 ID 不同。克隆 CA 在实例销毁并完成证据留存后由负责人单独删除。

@@ -38,8 +38,8 @@ COMMIT;
 ## 数据库凭据轮换
 
 1. 在腾讯云创建/更新最小权限应用账号凭据，保留旧凭据直到新连接验证完成；不要关闭 TLS。
-2. 同时更新 `/etc/fenshi/app.env` 的 `DATABASE_URL`（容器 CA 路径）和 `OPERATIONS_DATABASE_URL`（宿主 CA 路径），不在命令行回显；如 CA/VIP 变化，同时下载新 CA 并确认 `sslmode=verify-full`。
-3. 运行 `DATABASE_URL="$OPERATIONS_DATABASE_URL" npx prisma migrate status` 和一次 `SELECT 1`，然后滚动重建 app 容器。
+2. 同时更新 `/etc/fenshi/app.env` 的 `DATABASE_URL`（容器 CA 路径）和 `OPERATIONS_DATABASE_URL`（宿主 CA 路径），以及只供 Prisma 使用的 `MIGRATION_DATABASE_URL`（迁移账号、宿主 CA 路径）；不在命令行回显，且两个角色凭据必须独立轮换。如 CA/VIP 变化，同时下载新 CA 并确认 `sslmode=verify-full`。
+3. 运行 `MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" npx prisma migrate status` 和 `psql "$OPERATIONS_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT 1'`，然后滚动重建 app 容器。
 4. 验证 ready、管理员/普通用户登录后，撤销旧数据库凭据并再次确认旧凭据无法连接。
 5. 如果怀疑数据库内容遭修改，禁止直接修补生产库；按[备份与恢复](backup-and-restore.md)克隆到隔离实例调查。
 

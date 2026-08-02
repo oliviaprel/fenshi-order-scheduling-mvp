@@ -8,7 +8,7 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN PRISMA_GENERATE_NO_ENGINE=1 DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build npx prisma generate \
+RUN PRISMA_GENERATE_NO_ENGINE=1 MIGRATION_DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build npx prisma generate \
     && APP_ORIGIN=http://127.0.0.1:3000 DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build npm run build
 
 FROM node:22-bookworm-slim AS runner

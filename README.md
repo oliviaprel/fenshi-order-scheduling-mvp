@@ -20,6 +20,7 @@ npm run dev
 
 ```powershell
 $env:DATABASE_URL='postgresql://postgres:postgres@localhost:5432/fenshi_test'
+$env:MIGRATION_DATABASE_URL='postgresql://postgres:postgres@localhost:5432/fenshi_test'
 $env:APP_ORIGIN='http://127.0.0.1:3000'
 npm run lint
 npm run typecheck

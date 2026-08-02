@@ -40,6 +40,8 @@ ALTER ROLE fenshi_app LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPL
 
 -- Do not rely on the default PUBLIC CONNECT grant; record the intended roles.
 SELECT format('GRANT CONNECT ON DATABASE %I TO fenshi_migrator, fenshi_app', current_database()) \gexec
+SELECT format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database()) \gexec
+SELECT format('REVOKE TEMPORARY ON DATABASE %I FROM fenshi_app', current_database()) \gexec
 
 -- Lock down the default application schema, then grant only its required use.
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
@@ -61,4 +63,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE fenshi_migrator IN SCHEMA public
 -- Verification (run after `prisma migrate deploy`):
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT 1;'
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE TABLE must_fail (id int);'
--- The first command succeeds; the second must fail with schema permission denied.
+--   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE TEMP TABLE must_fail (id int);'
+-- The first command succeeds; both CREATE commands must fail with permission denied.
