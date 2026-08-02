@@ -7,6 +7,9 @@ import {
   type MaintenanceOptions,
   type MaintenanceResult,
 } from "./maintenance.service";
+import { MaintenanceFailure, maintenanceErrorCode } from "./maintenance-errors";
+
+export { MaintenanceFailure } from "./maintenance-errors";
 
 export type MaintenanceCliRuntime = {
   env: NodeJS.ProcessEnv;
@@ -18,8 +21,15 @@ export type MaintenanceCliRuntime = {
 };
 
 export async function runMaintenanceCli(runtime: MaintenanceCliRuntime): Promise<number> {
+  let auditArchive: AuditArchive;
   try {
-    const auditArchive: AuditArchive = encryptedAuditArchiveFromEnv(runtime.env);
+    auditArchive = encryptedAuditArchiveFromEnv(runtime.env);
+  } catch {
+    runtime.write(`${JSON.stringify({ error: maintenanceErrorCode("CONFIG") })}\n`);
+    return 1;
+  }
+
+  try {
     const execute = runtime.execute ?? runMaintenance;
     const result = await execute({
       now: runtime.now,
@@ -28,8 +38,9 @@ export async function runMaintenanceCli(runtime: MaintenanceCliRuntime): Promise
     });
     runtime.write(`${JSON.stringify(result)}\n`);
     return 0;
-  } catch {
-    runtime.write(`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`);
+  } catch (error) {
+    const category = error instanceof MaintenanceFailure ? error.category : "DATABASE";
+    runtime.write(`${JSON.stringify({ error: maintenanceErrorCode(category) })}\n`);
     return 1;
   }
 }

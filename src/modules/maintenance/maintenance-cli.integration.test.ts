@@ -69,7 +69,7 @@ describe("maintenance npm command", () => {
       expect(failure.exitCode).toBe(1);
       expect(failure.stderr).not.toContain(secret);
       expect(failure.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1);
-      expect(JSON.parse(failure.stdout)).toEqual({ error: "MAINTENANCE_FAILED" });
+      expect(JSON.parse(failure.stdout)).toEqual({ error: "MAINTENANCE_CONFIG" });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

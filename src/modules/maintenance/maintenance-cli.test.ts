@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { runMaintenanceScript } from "../../../scripts/run-maintenance";
-import { runMaintenanceCli } from "./maintenance-cli";
+import { MaintenanceFailure, runMaintenanceCli } from "./maintenance-cli";
 
 describe("maintenance CLI", () => {
   it("writes exactly one JSON result and exits zero on success", async () => {
@@ -31,7 +31,7 @@ describe("maintenance CLI", () => {
     expect(stderr).toEqual([]);
   });
 
-  it("writes a safe JSON error and exits non-zero without leaking thrown secrets", async () => {
+  it("classifies an untyped executor failure as DATABASE without leaking thrown secrets", async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
     const secret = "raw-key-or-audit-record";
@@ -51,8 +51,29 @@ describe("maintenance CLI", () => {
     });
 
     expect(exitCode).toBe(1);
-    expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`]);
+    expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_DATABASE" })}\n`]);
     expect(stderr).toEqual([]);
+    expect(stdout.join("")).not.toContain(secret);
+  });
+
+  it("preserves an explicit archive failure classification without leaking details", async () => {
+    const stdout: string[] = [];
+    const secret = "archive-path-and-key";
+    const exitCode = await runMaintenanceCli({
+      env: {
+        NODE_ENV: "test",
+        AUDIT_ARCHIVE_DIR: "unused",
+        AUDIT_ARCHIVE_KEY: Buffer.alloc(32).toString("base64"),
+      },
+      now: new Date(),
+      execute: async () => {
+        throw new MaintenanceFailure("ARCHIVE", { cause: new Error(secret) });
+      },
+      write: (message) => stdout.push(message),
+      writeError: () => undefined,
+    });
+    expect(exitCode).toBe(1);
+    expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_ARCHIVE" })}\n`]);
     expect(stdout.join("")).not.toContain(secret);
   });
 
@@ -84,7 +105,7 @@ describe("maintenance CLI", () => {
 
     expect(exitCode).toBe(1);
     expect(executed).toBe(false);
-    expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`]);
+    expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_CONFIG" })}\n`]);
     expect(stderr).toEqual([]);
   });
 });
@@ -109,29 +130,14 @@ describe("maintenance script lifecycle", () => {
           stderr: { write: (message) => stderr.push(message) },
         }),
       ).resolves.toBe(1);
-      expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`]);
+      expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_CONFIG" })}\n`]);
       expect(stderr).toEqual([]);
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
-  it.each([
-    {
-      exitCode: 0,
-      output: `${JSON.stringify({
-        expiredSessions: 0,
-        expiredReservations: 0,
-        staleThrottles: 0,
-        archivedAuditLogs: 0,
-        archiveId: null,
-      })}\n`,
-    },
-    {
-      exitCode: 1,
-      output: `${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`,
-    },
-  ])("preserves one stdout result when database disconnect fails", async (fixture) => {
+  it("classifies a disconnect failure after otherwise successful maintenance", async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
 
@@ -142,15 +148,29 @@ describe("maintenance script lifecycle", () => {
         stderr: { write: (message) => stderr.push(message) },
         runCli: async (runtime: Parameters<typeof runMaintenanceCli>[0]) => {
           runtime.onDatabaseAccess?.();
-          runtime.write(fixture.output);
-          return fixture.exitCode;
+          runtime.write(`${JSON.stringify({ archiveId: null })}\n`);
+          return 0;
         },
         disconnectDatabase: async () => {
           throw new Error("disconnect failed");
         },
       }),
-    ).resolves.toBe(fixture.exitCode);
-    expect(stdout).toEqual([fixture.output]);
+    ).resolves.toBe(1);
+    expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_DISCONNECT" })}\n`]);
     expect(stderr).toEqual([]);
+  });
+
+  it("does not replace the original classified failure when disconnect also fails", async () => {
+    const stdout: string[] = [];
+    await expect(runMaintenanceScript({
+      env: { NODE_ENV: "test" }, stdout: { write: (m) => stdout.push(m) }, stderr: { write: () => undefined },
+      runCli: async (runtime) => {
+        runtime.onDatabaseAccess?.();
+        runtime.write(`${JSON.stringify({ error: "MAINTENANCE_ARCHIVE" })}\n`);
+        return 1;
+      },
+      disconnectDatabase: async () => { throw new Error("secret disconnect detail"); },
+    })).resolves.toBe(1);
+    expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_ARCHIVE" })}\n`]);
   });
 });

@@ -1,4 +1,5 @@
 import type { AuditArchive } from "./encrypted-audit-archive";
+import { MaintenanceFailure } from "./maintenance-errors";
 
 const MAINTENANCE_BATCH_SIZE = 5_000;
 const THROTTLE_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -36,7 +37,12 @@ export function auditRetentionCutoff(now: Date): Date {
 
 export async function runMaintenance(options: MaintenanceOptions): Promise<MaintenanceResult> {
   const { now, auditArchive } = options;
-  const { prisma } = await import("../../server/db/client");
+  let prisma: typeof import("../../server/db/client").prisma;
+  try {
+    ({ prisma } = await import("../../server/db/client"));
+  } catch (error) {
+    throw new MaintenanceFailure("CONFIG", { cause: error });
+  }
   options.onDatabaseAccess?.();
   const throttleCutoff = new Date(now.getTime() - THROTTLE_RETENTION_MS);
   const expiredSessions = await prisma.$transaction(async (tx) => {
@@ -105,7 +111,12 @@ export async function runMaintenance(options: MaintenanceOptions): Promise<Maint
     };
   }
 
-  const receipt = await auditArchive.write(auditRecords);
+  let receipt;
+  try {
+    receipt = await auditArchive.write(auditRecords);
+  } catch (error) {
+    throw new MaintenanceFailure("ARCHIVE", { cause: error });
+  }
   const deleted = await prisma.$transaction((tx) =>
     tx.auditLog.deleteMany({
       where: {

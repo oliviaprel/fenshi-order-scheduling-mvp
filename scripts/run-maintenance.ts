@@ -11,14 +11,17 @@ type MaintenanceScriptRuntime = {
 
 export async function runMaintenanceScript(runtime: MaintenanceScriptRuntime): Promise<number> {
   let databaseClientLoaded = false;
+  const bufferedOutput: string[] = [];
+  let exitCode = 1;
+  let disconnectFailed = false;
   try {
-    return await (runtime.runCli ?? runMaintenanceCli)({
+    exitCode = await (runtime.runCli ?? runMaintenanceCli)({
       env: runtime.env,
       now: new Date(),
       onDatabaseAccess: () => {
         databaseClientLoaded = true;
       },
-      write: (message) => runtime.stdout.write(message),
+      write: (message) => bufferedOutput.push(message),
       writeError: (message) => runtime.stderr.write(message),
     });
   } finally {
@@ -31,11 +34,16 @@ export async function runMaintenanceScript(runtime: MaintenanceScriptRuntime): P
           await prisma.$disconnect();
         }
       } catch {
-        // Maintenance has already completed and emitted its single result.
-        // Process exit releases a pool that could not be cleanly disconnected.
+        disconnectFailed = true;
       }
     }
   }
+  if (exitCode === 0 && disconnectFailed) {
+    runtime.stdout.write(`${JSON.stringify({ error: "MAINTENANCE_DISCONNECT" })}\n`);
+    return 1;
+  }
+  runtime.stdout.write(bufferedOutput[0] ?? `${JSON.stringify({ error: "MAINTENANCE_CONFIG" })}\n`);
+  return exitCode;
 }
 
 async function main(): Promise<void> {
@@ -48,7 +56,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   void main().catch(() => {
-    process.stdout.write(`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`);
+    process.stdout.write(`${JSON.stringify({ error: "MAINTENANCE_CONFIG" })}\n`);
     process.exitCode = 1;
   });
 }
