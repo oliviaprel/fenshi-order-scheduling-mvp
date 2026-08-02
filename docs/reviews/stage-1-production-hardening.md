@@ -72,6 +72,10 @@ attestation。生产部署只能使用 `ghcr.io/oliviaprel/fenshi-order-scheduli
 | H3 请求体无界 | 已关闭 | `da2a743`, `90fd69d` | 32 KiB、有/无 `Content-Length`、reader cancel 路径由 unit/integration 全量覆盖 |
 | H4 readiness 公网开放 | 已关闭 | `68ef088` | Caddy 公共 ready 404、app 内部 ready 200（见容器验证） |
 | H5 无生产容器供应链 | 本地实现；外部发布待办 | `44c9861`, `4be8543`, `def8554`, `eb16a3f`, `8357360`, `5d87259` | 应用镜像及固定 Caddy `2.10.2-alpine@sha256:4c6e91c…e530d` 均受 SPDX、完整 inventory、可修复 High/Critical gate 保护；GHCR artifact/attestation 待真实 `master` run |
+
+> 2026-08-03 本地 Caddy 复扫：SPDX-2.3 为 917,688 bytes / 163 packages；Trivy 0.70.0 完整 inventory 为 70 项（High 64、Critical 6）。严格 fixable gate 非零阻断，因此该 2.10.2 精确镜像目前不得发布。未执行线上发布，也未豁免或降低门禁；须另行批准并验证更新的官方 Caddy 引用。
+>
+> 经批准另测官方 linux/amd64 `caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648`：SPDX-2.3 为 921,972 bytes / 179 packages，完整 inventory 为 High 10 / Critical 0，fixable gate 仍非零。故未把生产引用切换到该候选，也未继续盲试其他版本；发布仍保持安全阻断。
 | M1 客户端控制 request ID | 已关闭 | `da2a743`, `90fd69d` | UUID/1–64 安全字符与 fallback 测试包含于 64 unit |
 | M2 未捕获错误未统一记录 | 已关闭 | `8117304` | 路由 unknown-error 结构化日志 integration 测试包含于 85 integration |
 | M3 辅助表无定期清理 | 已关闭 | `39b88c7`, `69025a2`, `402d40b` | 有界、幂等、并发安全维护测试与 CLI 验证包含于全量门禁 |
