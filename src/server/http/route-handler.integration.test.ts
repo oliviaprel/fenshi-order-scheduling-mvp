@@ -79,6 +79,35 @@ describe("routeHandler", () => {
     await expect(response.json()).resolves.toMatchObject({ error: { code: "PAYLOAD_TOO_LARGE" } });
   });
 
+  it("returns payload too large when cancelling an oversized stream fails", async () => {
+    const chunks = [
+      new TextEncoder().encode('{"value":"'),
+      new TextEncoder().encode("x".repeat(32_757)),
+      new TextEncoder().encode('"}'),
+    ];
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk === undefined) controller.close();
+        else controller.enqueue(chunk);
+      },
+      cancel() {
+        return Promise.reject(new Error("cancel failed"));
+      },
+    });
+    const request = new Request(url, {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    Object.defineProperty(request, "cookies", { value: { get: () => undefined } });
+
+    const response = await parseBodyThroughRouteHandler(request);
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "PAYLOAD_TOO_LARGE" } });
+  });
+
   it("reports malformed JSON with the existing invalid JSON error", async () => {
     const response = await parseBodyThroughRouteHandler(
       new Request(url, { method: "POST", body: '{"value":' }),

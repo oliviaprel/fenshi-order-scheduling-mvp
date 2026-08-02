@@ -46,7 +46,7 @@ export async function parseJsonBody<T>(
         }
 
         if (bytesRead > maxBytes) {
-          await reader.cancel();
+          await reader.cancel().catch(() => undefined);
           throw new ApiError(413, "PAYLOAD_TOO_LARGE", "请求体过大");
         }
       }
