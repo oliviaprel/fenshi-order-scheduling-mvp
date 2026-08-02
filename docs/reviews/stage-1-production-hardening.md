@@ -22,7 +22,7 @@ Stage 1 的代码级加固和本地质量门禁已经验证，但**当前仍不�
 
 ## 本地完整门禁
 
-| 命令 | 2026-08-02 实际结果 |
+| 命令 | 2026-08-02–03 验证窗口实际结果 |
 | --- | --- |
 | `npm ci` | exit 0；本机 Node 24.14.0 收到 `jsdom` engine 警告，CI/日常开发应使用 README 要求的 Node 22 最新 LTS |
 | `npm run prisma:generate` | exit 0，Prisma Client 7.9.1 生成成功 |
