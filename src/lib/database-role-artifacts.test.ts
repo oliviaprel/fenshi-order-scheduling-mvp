@@ -33,4 +33,27 @@ describe("database role deployment artifacts", () => {
     expect(roleRunbook).toMatch(/GRANT USAGE, CREATE ON SCHEMA public TO fenshi_migrator;/);
     expect(roleRunbook).toMatch(/GRANT USAGE ON SCHEMA public TO fenshi_app;/);
   });
+
+  it("boots a fresh local database with the documented split roles", () => {
+    const compose = readProjectFile("compose.dev.yaml");
+    const exampleEnv = readProjectFile(".env.example");
+    const localRoleBootstrap = readProjectFile(
+      "docker/postgres/init-local-database-roles.sql",
+    );
+
+    expect(compose).toContain(
+      "./docker/postgres/init-local-database-roles.sql:/docker-entrypoint-initdb.d/01-init-local-database-roles.sql:ro",
+    );
+    expect(exampleEnv).toContain(
+      "DATABASE_URL=postgresql://fenshi_app:fenshi_app_dev@localhost:5432/fenshi",
+    );
+    expect(exampleEnv).toContain(
+      "MIGRATION_DATABASE_URL=postgresql://fenshi_migrator:fenshi_migrator_dev@localhost:5432/fenshi",
+    );
+    expect(localRoleBootstrap).toContain("PASSWORD 'fenshi_migrator_dev'");
+    expect(localRoleBootstrap).toContain("PASSWORD 'fenshi_app_dev'");
+    expect(localRoleBootstrap).toContain(
+      "ALTER DEFAULT PRIVILEGES FOR ROLE fenshi_migrator IN SCHEMA public",
+    );
+  });
 });

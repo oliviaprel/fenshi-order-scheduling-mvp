@@ -14,6 +14,11 @@ npx prisma migrate deploy
 npm run dev
 ```
 
+`compose.dev.yaml` 仅为本机开发创建 `.env.example` 中的 `fenshi_migrator`
+和 `fenshi_app` 角色及固定开发密码。初始化脚本只会在全新 PostgreSQL 数据卷上运行；
+已有旧数据卷请按 `docs/runbooks/postgresql-roles.sql` 手动补齐角色，或在确认本地数据可丢弃后
+删除该 Compose 数据卷并重新启动。生产环境不得使用这些开发密码。
+
 另开一个交互式终端运行 `npm run admin:create` 创建首个管理员；密码不接受命令行参数，也不会回显。应用默认地址为 `http://localhost:3000`。
 
 ## 质量门禁
