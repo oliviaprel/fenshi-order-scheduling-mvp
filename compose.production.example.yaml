@@ -5,6 +5,8 @@ services:
     environment:
       NODE_ENV: production
       APP_ORIGIN: https://${APP_DOMAIN:?set APP_DOMAIN}
+      # The web container deliberately receives only the DML-only app role.
+      # Run Prisma migrations outside this service with MIGRATION_DATABASE_URL.
       DATABASE_URL: ${DATABASE_URL:?inject the TencentDB private TLS connection URL}
     expose:
       - "3000"

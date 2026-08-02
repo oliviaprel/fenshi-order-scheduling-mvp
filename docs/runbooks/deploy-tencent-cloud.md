@@ -1,5 +1,15 @@
 # 腾讯云部署与回滚运行手册
 
+## Database role separation
+
+Run `docs/runbooks/postgresql-roles.sql` as the target database owner before
+the first deployment. Keep the `fenshi_migrator` password exclusively in the
+controlled migration environment. `MIGRATION_DATABASE_URL` is required only
+when invoking Prisma CLI commands and must never appear in the Compose `app`
+environment. The container's `DATABASE_URL` and host-only
+`OPERATIONS_DATABASE_URL` use `fenshi_app` for runtime DML and administrator
+commands respectively.
+
 ## 目的与发布门槛
 
 本文面向未参与开发的发布人员。生产拓扑固定为“公网 → Caddy HTTPS → 私网 Node 容器 → 腾讯云托管 PostgreSQL”，应用端口 3000 和数据库端口不得暴露到公网。
@@ -34,11 +44,12 @@ sudo chmod 0600 /etc/fenshi/app.env
 APP_DOMAIN='orders.example.com'
 APP_IMAGE='registry.example.com/fenshi-order-scheduling-mvp@sha256:替换为已验签摘要'
 TENCENTDB_POSTGRESQL_CA_FILE='/etc/fenshi/tencentdb-postgresql-ca.pem'
-DATABASE_URL='postgresql://应用账号:URL编码密码@私网VIP:5432/fenshi?sslmode=verify-full&sslrootcert=/run/secrets/tencentdb-postgresql-ca.pem'
-OPERATIONS_DATABASE_URL='postgresql://应用账号:URL编码密码@私网VIP:5432/fenshi?sslmode=verify-full&sslrootcert=/etc/fenshi/tencentdb-postgresql-ca.pem'
+DATABASE_URL='postgresql://fenshi_app:URL编码密码@私网VIP:5432/fenshi?sslmode=verify-full&sslrootcert=/run/secrets/tencentdb-postgresql-ca.pem'
+OPERATIONS_DATABASE_URL='postgresql://fenshi_app:URL编码密码@私网VIP:5432/fenshi?sslmode=verify-full&sslrootcert=/etc/fenshi/tencentdb-postgresql-ca.pem'
+MIGRATION_DATABASE_URL='postgresql://fenshi_migrator:URL编码密码@私网VIP:5432/fenshi?sslmode=verify-full&sslrootcert=/etc/fenshi/tencentdb-postgresql-ca.pem'
 ```
 
-`DATABASE_URL` 供容器使用，CA 是 Docker Secret 路径；`OPERATIONS_DATABASE_URL` 只供宿主机迁移/管理员命令使用，CA 是宿主路径。以 `sudo docker compose --env-file /etc/fenshi/app.env -f compose.production.example.yaml config --quiet` 检查配置，成功时不展开 Secret。CI、镜像、仓库和 Compose 文件均不得保存真实 Secret。
+`DATABASE_URL` 供容器使用，CA 是 Docker Secret 路径；`OPERATIONS_DATABASE_URL` 只供宿主机以 `fenshi_app` 身份运行管理员命令，CA 是宿主路径；`MIGRATION_DATABASE_URL` 只供宿主机以 `fenshi_migrator` 身份执行 Prisma 迁移。它不在 Compose 的 `app` 环境中注入。以 `sudo docker compose --env-file /etc/fenshi/app.env -f compose.production.example.yaml config --quiet` 检查配置，成功时不展开 Secret。CI、镜像、仓库和 Compose 文件均不得保存真实 Secret。
 
 ## 3. 首次发布
 
@@ -58,7 +69,7 @@ OPERATIONS_DATABASE_URL='postgresql://应用账号:URL编码密码@私网VIP:543
 3. **先迁移，后启动新镜像**。容器入口不会自动迁移，也不得把破坏性迁移放入启动命令：
 
    ```bash
-   DATABASE_URL="$OPERATIONS_DATABASE_URL" npx prisma migrate deploy
+   MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" npx prisma migrate deploy
    ```
 
 4. 首次且仅首次，在仍未开放业务流量时以交互式 TTY 创建管理员：
@@ -89,7 +100,7 @@ OPERATIONS_DATABASE_URL='postgresql://应用账号:URL编码密码@私网VIP:543
 ## 4. 后续发布
 
 1. 保存当前 `APP_IMAGE` digest 为回滚候选，确认其仍可从镜像仓库拉取。
-2. 在新版本源码上依次运行 `npm ci`、全量质量门禁和 `DATABASE_URL="$OPERATIONS_DATABASE_URL" npx prisma migrate deploy`。
+2. 在新版本源码上依次运行 `npm ci`、全量质量门禁和 `MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" npx prisma migrate deploy`。
 3. 只有迁移成功后，才把 `/etc/fenshi/app.env` 的 `APP_IMAGE` 更新为新 digest并运行 `docker compose pull && docker compose up -d`。
 4. 检查 live、ready、容器状态和登录烟测；记录提交 SHA、镜像 digest、迁移编号、操作者和时间。
 
