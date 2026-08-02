@@ -71,7 +71,7 @@ attestation。生产部署只能使用 `ghcr.io/oliviaprel/fenshi-order-scheduli
 | H2 真实备份恢复演练 | **外部阻塞** | 既有 `docs/runbooks/backup-and-restore.md` | 演练表仍为“未执行”；必须由云数据库负责人完成 |
 | H3 请求体无界 | 已关闭 | `da2a743`, `90fd69d` | 32 KiB、有/无 `Content-Length`、reader cancel 路径由 unit/integration 全量覆盖 |
 | H4 readiness 公网开放 | 已关闭 | `68ef088` | Caddy 公共 ready 404、app 内部 ready 200（见容器验证） |
-| H5 无生产容器供应链 | 本地实现；外部发布待办 | `44c9861`, `4be8543`, `def8554`, `eb16a3f`, `8357360`, `5d87259` | workflow 25/25；提交版 Dockerfile 本地构建/运行见上；GHCR/SBOM artifact/Trivy artifact/attestation 待真实 `master` run |
+| H5 无生产容器供应链 | 本地实现；外部发布待办 | `44c9861`, `4be8543`, `def8554`, `eb16a3f`, `8357360`, `5d87259` | 应用镜像及固定 Caddy `2.10.2-alpine@sha256:4c6e91c…e530d` 均受 SPDX、完整 inventory、可修复 High/Critical gate 保护；GHCR artifact/attestation 待真实 `master` run |
 | M1 客户端控制 request ID | 已关闭 | `da2a743`, `90fd69d` | UUID/1–64 安全字符与 fallback 测试包含于 64 unit |
 | M2 未捕获错误未统一记录 | 已关闭 | `8117304` | 路由 unknown-error 结构化日志 integration 测试包含于 85 integration |
 | M3 辅助表无定期清理 | 已关闭 | `39b88c7`, `69025a2`, `402d40b` | 有界、幂等、并发安全维护测试与 CLI 验证包含于全量门禁 |

@@ -13,6 +13,7 @@ const workflowPaths = {
 const IMAGE_NAME = "ghcr.io/oliviaprel/fenshi-order-scheduling-mvp";
 const CI_IMAGE = `${IMAGE_NAME}:ci-\${{ github.sha }}`;
 const PUBLISH_IMAGE = `${IMAGE_NAME}:sha-\${{ github.sha }}`;
+const CADDY_IMAGE = "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d";
 const DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/fenshi_test";
 
 const ACTIONS = Object.freeze({
@@ -225,6 +226,22 @@ const CI_STEP_CONTRACT = Object.freeze([
       "vuln-type": "os,library",
     },
   },
+  {
+    name: "Generate production Caddy SPDX JSON SBOM", id: "caddy_sbom", uses: ACTIONS.sbom,
+    with: { image: CADDY_IMAGE, format: "spdx-json", "output-file": "caddy-ci.spdx.json", "artifact-name": "caddy-ci-sbom.spdx.json" },
+  },
+  {
+    name: "Record complete production Caddy High and Critical inventory", id: "caddy_inventory", uses: ACTIONS.trivy,
+    with: { "image-ref": CADDY_IMAGE, format: "json", severity: "HIGH,CRITICAL", "exit-code": "0", "ignore-unfixed": false, "vuln-type": "os,library", output: "caddy-trivy-high-critical.json" },
+  },
+  {
+    name: "Upload complete production Caddy vulnerability inventory", id: "caddy_upload_inventory", uses: ACTIONS.uploadArtifact,
+    with: { name: "caddy-ci-vulnerabilities-${{ github.sha }}", path: "caddy-trivy-high-critical.json", "if-no-files-found": "error" },
+  },
+  {
+    name: "Fail on fixable production Caddy High and Critical vulnerabilities", id: "caddy_gate", uses: ACTIONS.trivy,
+    with: { "image-ref": CADDY_IMAGE, format: "table", severity: "HIGH,CRITICAL", "exit-code": "1", "ignore-unfixed": true, "vuln-type": "os,library" },
+  },
 ]);
 
 const PUBLISH_STEP_CONTRACT = Object.freeze([
@@ -288,6 +305,22 @@ const PUBLISH_STEP_CONTRACT = Object.freeze([
       "ignore-unfixed": true,
       "vuln-type": "os,library",
     },
+  },
+  {
+    name: "Generate production Caddy SPDX JSON SBOM", id: "caddy_sbom", uses: ACTIONS.sbom,
+    with: { image: CADDY_IMAGE, format: "spdx-json", "output-file": "caddy-image.spdx.json", "artifact-name": "caddy-image-${{ github.sha }}.spdx.json" },
+  },
+  {
+    name: "Record complete production Caddy High and Critical inventory", id: "caddy_inventory", uses: ACTIONS.trivy,
+    with: { "image-ref": CADDY_IMAGE, format: "json", severity: "HIGH,CRITICAL", "exit-code": "0", "ignore-unfixed": false, "vuln-type": "os,library", output: "caddy-trivy-high-critical.json" },
+  },
+  {
+    name: "Upload complete production Caddy vulnerability inventory", id: "caddy_upload_inventory", uses: ACTIONS.uploadArtifact,
+    with: { name: "caddy-image-vulnerabilities-${{ github.sha }}", path: "caddy-trivy-high-critical.json", "if-no-files-found": "error" },
+  },
+  {
+    name: "Fail on fixable production Caddy High and Critical vulnerabilities", id: "caddy_gate", uses: ACTIONS.trivy,
+    with: { "image-ref": CADDY_IMAGE, format: "table", severity: "HIGH,CRITICAL", "exit-code": "1", "ignore-unfixed": true, "vuln-type": "os,library" },
   },
   {
     name: "Log in to GHCR",

@@ -266,3 +266,26 @@ test("requires provenance to attest the pushed digest under the canonical image 
   expectError(errors, "attestation subject-name must be the canonical image name");
   expectError(errors, "attestation subject-digest must use the pushed digest output");
 });
+
+test("rejects mutable, overridden, or unscanned production Caddy images", async (t) => {
+  await t.test("mutable tag", () => {
+    const mutated = mutate(ciSource, (workflow) => {
+      const step = steps(workflow, "quality").find((item) => item.id === "caddy_sbom");
+      step.with.image = "caddy:2.10.2-alpine";
+    });
+    expectError(validate({ ciSource: mutated }), "CI steps must exactly match the approved sequence");
+  });
+  await t.test("digest override", () => {
+    const mutated = mutate(publishSource, (workflow) => {
+      const step = steps(workflow, "publish").find((item) => item.id === "caddy_inventory");
+      step.with["image-ref"] = "caddy@sha256:" + "0".repeat(64);
+    });
+    expectError(validate({ publishSource: mutated }), "publish steps must exactly match the approved sequence");
+  });
+  await t.test("scan removal", () => {
+    const mutated = mutate(ciSource, (workflow) => {
+      workflow.jobs.quality.steps = steps(workflow, "quality").filter((item) => item.id !== "caddy_gate");
+    });
+    expectError(validate({ ciSource: mutated }), "CI steps must exactly match the approved sequence");
+  });
+});
