@@ -2,7 +2,7 @@
 
 第一阶段提供手机号/密码登录、强制改密、会话、管理员用户管理、审计记录与登录限流，并附带生产健康检查、容器样例和腾讯云运行手册。
 
-> **生产状态（2026-08-02）：尚未获准上线。** Stage 1 的本地代码与容器门禁已完成，
+> **生产状态（2026-08-03）：尚未获准上线。** Stage 1 的本地代码与容器门禁已完成，
 > 但真实腾讯云隔离恢复演练、`master` 上的 GitHub 发布工作流、公开 GHCR 包、线上
 > provenance 验证及 GitHub ruleset 仍需在外部环境完成并留证。完整订单排期业务也仍在后续阶段。
 > 详见 [Stage 1 加固证据](docs/reviews/stage-1-production-hardening.md)。
@@ -36,6 +36,7 @@ npm run lint
 npm run typecheck
 npm run prisma:validate
 npx prisma migrate deploy
+npm run test:database-roles
 npm run test:unit
 npm run test:integration
 npm run test:e2e
@@ -43,6 +44,11 @@ npm run build
 npm audit --omit=dev --audit-level=high
 docker build -t fenshi-order-scheduling-mvp:phase-1 .
 ```
+
+`test:database-roles` 会使用独立 Compose project、非冲突的 localhost 端口和专属数据卷，
+从全新数据库验证迁移/运行角色分离、4 个迁移、运行角色 CRUD 以及永久和临时 DDL 拒绝，
+并在结束时删除该 project 和数据卷。Dockerfile 的依赖安装关闭内嵌 advisory 请求并限制并发，
+但不会绕过 lockfile integrity 或生命周期脚本；上面的独立 production `npm audit` 仍是强制门禁。
 
 E2E 还需设置 `.env.example` 列出的六个 `E2E_*` 变量；不得把这些值写入日志或提交到仓库。
 
