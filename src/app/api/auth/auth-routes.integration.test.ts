@@ -145,28 +145,47 @@ describe("authentication route handlers", () => {
   });
 
   it.each([
-    ["login", loginRoute, "/api/auth/login", undefined],
-    ["logout", logoutRoute, "/api/auth/logout", undefined],
+    ["login", loginRoute, "/api/auth/login", undefined, "bad-origin-login"],
+    ["logout", logoutRoute, "/api/auth/logout", undefined, "bad-origin-logout"],
     [
       "change password",
       changePasswordRoute,
       "/api/auth/change-password",
       { currentPassword: "irrelevant", newPassword: "new-secure-pass-2026" },
+      "bad-origin-change-password",
     ],
-  ])("rejects a mismatched Origin before processing the %s write", async (_name, handler, path, body) => {
+  ])("rejects a mismatched Origin before processing the %s write", async (_name, handler, path, body, requestId) => {
     const response = await handler(
       request(path, {
         method: "POST",
         body,
         origin: "https://attacker.example.com",
-        requestId: `bad-origin-${_name}`,
+        requestId,
       }),
     );
 
     expect(response.status).toBe(403);
-    expect(response.headers.get("x-request-id")).toBe(`bad-origin-${_name}`);
+    expect(response.headers.get("x-request-id")).toBe(requestId);
     await expect(response.json()).resolves.toMatchObject({
-      error: { code: "ORIGIN_NOT_ALLOWED", requestId: `bad-origin-${_name}` },
+      error: { code: "ORIGIN_NOT_ALLOWED", requestId },
+    });
+  });
+
+  it("replaces an unsafe request ID while rejecting a mismatched Origin before a password change", async () => {
+    const response = await changePasswordRoute(
+      request("/api/auth/change-password", {
+        method: "POST",
+        body: { currentPassword: "irrelevant", newPassword: "new-secure-pass-2026" },
+        origin: "https://attacker.example.com",
+        requestId: "bad-origin-change password",
+      }),
+    );
+
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    expect(response.status).toBe(403);
+    expect(response.headers.get("x-request-id")).toMatch(uuidPattern);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "ORIGIN_NOT_ALLOWED", requestId: expect.stringMatching(uuidPattern) },
     });
   });
 
