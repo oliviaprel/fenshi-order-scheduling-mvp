@@ -67,12 +67,13 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fenshi_test
           APP_ORIGIN: http://127.0.0.1:3000
-          E2E_ADMIN_PHONE: ${{ secrets.E2E_ADMIN_PHONE }}
-          E2E_ADMIN_PASSWORD: ${{ secrets.E2E_ADMIN_PASSWORD }}
-          E2E_USER_PHONE: ${{ secrets.E2E_USER_PHONE }}
-          E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
-          E2E_NEW_PASSWORD: ${{ secrets.E2E_NEW_PASSWORD }}
-          E2E_INVALID_PASSWORD: ${{ secrets.E2E_INVALID_PASSWORD }}
+          # Public fixtures for the disposable fenshi_test database; never use in production.
+          E2E_ADMIN_PHONE: '13900139000'
+          E2E_ADMIN_PASSWORD: CI-only-admin-pass-2026!
+          E2E_USER_PHONE: '13800138000'
+          E2E_USER_PASSWORD: CI-only-user-temp-pass-2026!
+          E2E_NEW_PASSWORD: CI-only-user-new-pass-2026!
+          E2E_INVALID_PASSWORD: CI-only-wrong-pass-2026!
       - run: npm run build
         env:
           APP_ORIGIN: http://127.0.0.1:3000

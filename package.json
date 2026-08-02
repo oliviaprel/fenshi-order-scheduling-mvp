@@ -13,7 +13,7 @@
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts --no-file-parallelism",
     "test:e2e": "playwright test",
-    "test:workflows": "node scripts/validate-workflows.mjs",
+    "test:workflows": "node --test scripts/validate-workflows.test.mjs && node scripts/validate-workflows.mjs",
     "prisma:generate": "prisma generate",
     "prisma:validate": "prisma validate",
     "admin:create": "tsx scripts/create-admin.ts",
@@ -49,6 +49,7 @@
     "tailwindcss": "4.3.3",
     "tsx": "4.23.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "yaml": "2.9.0"
   }
 }

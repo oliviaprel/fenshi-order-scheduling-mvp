@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseDocument } from "yaml";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workflowPaths = {
@@ -8,126 +9,380 @@ const workflowPaths = {
   publish: path.join(projectRoot, ".github", "workflows", "publish-image.yml"),
 };
 
-const errors = [];
+const IMAGE_NAME = "ghcr.io/oliviaprel/fenshi-order-scheduling-mvp";
+const CI_IMAGE = `${IMAGE_NAME}:ci-\${{ github.sha }}`;
+const PUBLISH_IMAGE = `${IMAGE_NAME}:sha-\${{ github.sha }}`;
+const APPROVED_ACTION_PUBLISHERS = new Set(["actions", "docker", "anchore", "aquasecurity"]);
 
-function requireMatch(source, pattern, message) {
-  if (!pattern.test(source)) errors.push(message);
+function scalar(value) {
+  return value === undefined || value === null ? "" : String(value);
 }
 
-function rejectMatch(source, pattern, message) {
-  if (pattern.test(source)) errors.push(message);
+function entries(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? Object.entries(value) : [];
 }
 
-async function readWorkflow(name, workflowPath) {
-  try {
-    return await readFile(workflowPath, "utf8");
-  } catch {
-    errors.push(`${name} workflow is missing: ${path.relative(projectRoot, workflowPath)}`);
-    return "";
+function exactStringArray(value, expected) {
+  return Array.isArray(value)
+    && value.length === expected.length
+    && value.every((item, index) => item === expected[index]);
+}
+
+function exactPermissions(value, expected) {
+  const actualEntries = entries(value).sort(([left], [right]) => left.localeCompare(right));
+  const expectedEntries = Object.entries(expected).sort(([left], [right]) => left.localeCompare(right));
+  return JSON.stringify(actualEntries) === JSON.stringify(expectedEntries);
+}
+
+function parseWorkflow(name, source, errors) {
+  const document = parseDocument(source, { prettyErrors: true, uniqueKeys: true, version: "1.2" });
+  if (document.errors.length > 0) {
+    for (const error of document.errors) errors.push(`${name} YAML is invalid: ${error.message}`);
+    return null;
   }
+  const workflow = document.toJS();
+  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
+    errors.push(`${name} workflow root must be a mapping`);
+    return null;
+  }
+  return workflow;
 }
 
-const [ci, publish] = await Promise.all([
-  readWorkflow("CI", workflowPaths.ci),
-  readWorkflow("publish", workflowPaths.publish),
-]);
+function actionName(step) {
+  return typeof step?.uses === "string" ? step.uses.split("@")[0] : "";
+}
 
-const imageName = "ghcr.io/oliviaprel/fenshi-order-scheduling-mvp";
-const writePermission = /^\s+[a-z-]+:\s*write\s*$/m;
+function findActionSteps(steps, name) {
+  return steps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => actionName(step) === name);
+}
 
-for (const [name, source] of [["CI", ci], ["publish", publish]]) {
-  for (const match of source.matchAll(/^\s+uses:\s*([^\s#]+).*$/gm)) {
-    const action = match[1];
-    if (!/@[0-9a-f]{40}$/.test(action)) {
-      errors.push(`${name} action must use an immutable 40-character commit SHA: ${action}`);
+function normalizeImage(value) {
+  return scalar(value).replace("${{ env.IMAGE_NAME }}", IMAGE_NAME);
+}
+
+function commandSteps(steps, pattern) {
+  return steps
+    .map((step, index) => ({ step, index, run: scalar(step?.run) }))
+    .filter(({ run }) => pattern.test(run));
+}
+
+function findNamedProperties(value, propertyName, trail = []) {
+  const found = [];
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      found.push(...findNamedProperties(item, propertyName, [...trail, String(index)]));
+    });
+  } else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      const nextTrail = [...trail, key];
+      if (key === propertyName) found.push({ value: item, location: nextTrail.join(".") });
+      found.push(...findNamedProperties(item, propertyName, nextTrail));
     }
-    if (!/^(?:actions|docker|anchore|aquasecurity)\//.test(action)) {
-      errors.push(`${name} action is not from an approved official publisher: ${action}`);
+  }
+  return found;
+}
+
+function validateActions(workflowName, workflow, errors) {
+  for (const reference of findNamedProperties(workflow, "uses")) {
+    const action = scalar(reference.value);
+    const [name, revision, ...extra] = action.split("@");
+    const location = `${workflowName} ${reference.location}`;
+    if (!name || !/^[0-9a-f]{40}$/.test(revision ?? "") || extra.length > 0) {
+      errors.push(`${location} action must use an immutable 40-character commit SHA: ${action}`);
+    }
+    if (!APPROVED_ACTION_PUBLISHERS.has(name.split("/")[0])) {
+      errors.push(`${location} action is not from an approved official publisher: ${action}`);
     }
   }
 }
 
-requireMatch(ci, /^\s*pull_request:\s*$/m, "CI must run for pull requests");
-requireMatch(ci, /^\s*branches:\s*\[master\]\s*$/m, "CI push trigger must target branches: [master]");
-requireMatch(ci, /docker\/build-push-action@[0-9a-f]{40}/, "CI must use an immutable docker/build-push-action revision");
-requireMatch(ci, /^\s+push:\s*false\s*$/m, "CI container build must explicitly set push: false");
-requireMatch(ci, new RegExp(`tags:\\s*${imageName.replaceAll("/", "\\/")}:ci-`), "CI must build the canonical GHCR image name locally");
-requireMatch(ci, /docker run[^\n]*(?:--detach|-d)[^\n]*fenshi-ci/, "CI must start the built container for a smoke test");
-requireMatch(ci, /curl[^\n]*\/api\/health\/live/, "CI smoke test must call the live health endpoint");
-requireMatch(ci, /anchore\/sbom-action@[0-9a-f]{40}/, "CI must generate an SBOM with an immutable Anchore action revision");
-requireMatch(ci, /^\s+format:\s*spdx-json\s*$/m, "CI SBOM must use SPDX JSON");
-requireMatch(ci, /aquasecurity\/trivy-action@[0-9a-f]{40}/, "CI must scan the image with an immutable Trivy action revision");
-requireMatch(ci, /^\s+severity:\s*['"]?CRITICAL,HIGH['"]?\s*$/m, "CI Trivy scan must cover High and Critical findings");
-requireMatch(ci, /^\s+exit-code:\s*['"]1['"]\s*$/m, "CI Trivy scan must fail on findings");
-requireMatch(ci, /^\s+ignore-unfixed:\s*true\s*$/m, "CI Trivy scan must distinguish actionable findings from unfixed upstream findings");
-requireMatch(ci, /^\s+ignore-unfixed:\s*false\s*$/m, "CI must retain unfixed findings in its complete vulnerability inventory");
-requireMatch(ci, /^\s+output:\s*trivy-high-critical\.json\s*$/m, "CI must write a complete High/Critical JSON inventory");
-requireMatch(ci, /^\s+exit-code:\s*['"]0['"]\s*$/m, "CI complete vulnerability inventory must never hide its artifact behind the gate exit code");
-requireMatch(ci, /actions\/upload-artifact@[0-9a-f]{40}/, "CI must upload the complete vulnerability inventory");
-rejectMatch(ci, writePermission, "CI must not grant any write permission");
-rejectMatch(ci, /docker\/login-action@/, "CI must not authenticate to a container registry");
-rejectMatch(ci, /^\s+push:\s*true\s*$/m, "CI must never push an image");
-rejectMatch(ci, /docker\s+push\b/, "CI must never run docker push");
-rejectMatch(ci, /actions\/attest-build-provenance@/, "CI must not create registry attestations");
-
-for (const command of ["prisma:generate", "prisma:validate", "prisma migrate deploy"]) {
-  requireMatch(
-    ci,
-    new RegExp(`- run: (?:npm run |npx )${command.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\r?\\n\\s+env:\\r?\\n\\s+MIGRATION_DATABASE_URL:`),
-    `CI ${command} must receive MIGRATION_DATABASE_URL`,
-  );
-}
-for (const command of ["test:unit", "test:integration", "test:e2e"]) {
-  requireMatch(
-    ci,
-    new RegExp(`- run: npm run ${command}\\r?\\n\\s+env:\\r?\\n\\s+DATABASE_URL:`),
-    `CI ${command} must receive runtime DATABASE_URL`,
-  );
+function findSecrets(value, trail = []) {
+  const found = [];
+  if (typeof value === "string" && /\bsecrets\s*\./i.test(value)) found.push(trail.join("."));
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => found.push(...findSecrets(item, [...trail, String(index)])));
+  } else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (/\bsecrets\s*\./i.test(key)) found.push([...trail, key].join("."));
+      found.push(...findSecrets(item, [...trail, key]));
+    }
+  }
+  return found;
 }
 
-requireMatch(publish, /^\s*branches:\s*\[master\]\s*$/m, "publish workflow must run only for master pushes");
-rejectMatch(publish, /^\s*(?:pull_request|pull_request_target|workflow_dispatch|schedule):/m, "publish workflow must not run for pull requests, manual dispatch, or schedules");
-for (const permission of ["contents: read", "packages: write", "id-token: write", "attestations: write"]) {
-  requireMatch(publish, new RegExp(`^\\s+${permission.replace(" ", "\\s+")}\\s*$`, "m"), `publish workflow must grant ${permission}`);
-}
-for (const match of publish.matchAll(/^\s+([a-z-]+):\s*write\s*$/gm)) {
-  if (!new Set(["packages", "id-token", "attestations"]).has(match[1])) {
-    errors.push(`publish workflow has unnecessary write permission: ${match[1]}`);
+function validateTriggers(name, workflow, expected, errors) {
+  const triggers = workflow.on;
+  if (!triggers || typeof triggers !== "object" || Array.isArray(triggers)) {
+    errors.push(`${name} triggers must be a mapping`);
+    return;
+  }
+  const actualNames = Object.keys(triggers).sort();
+  const expectedNames = Object.keys(expected).sort();
+  if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
+    errors.push(`${name} triggers must be exactly ${expectedNames.join(" and ")}`);
+  }
+  for (const [triggerName, branches] of Object.entries(expected)) {
+    if (!exactStringArray(triggers[triggerName]?.branches, branches)) {
+      errors.push(`${name} ${triggerName} branches must be exactly [${branches.join(", ")}]`);
+    }
   }
 }
-requireMatch(publish, /docker\/login-action@[0-9a-f]{40}/, "publish workflow must use an immutable GHCR login action revision");
-requireMatch(publish, /docker\/build-push-action@[0-9a-f]{40}/, "publish workflow must use an immutable build action revision");
-requireMatch(publish, /^\s+load:\s*true\s*$/m, "publish workflow must load the exact image that will be scanned and pushed");
-requireMatch(publish, /^\s+push:\s*false\s*$/m, "publish build must not push before the vulnerability gate");
-requireMatch(publish, /docker push "\$\{IMAGE_NAME\}:sha-\$\{GITHUB_SHA\}"/, "publish workflow must push sha-<full commit> after scanning");
-requireMatch(publish, /docker push "\$\{IMAGE_NAME\}:latest"/, "publish workflow must push latest after scanning");
-requireMatch(publish, new RegExp(`${imageName.replaceAll("/", "\\/")}:sha-\\$\\{\\{ github\\.sha \\}\\}`), "publish workflow must tag sha-<full commit>");
-requireMatch(publish, new RegExp(`${imageName.replaceAll("/", "\\/")}:latest`), "publish workflow must tag latest");
-requireMatch(publish, /anchore\/sbom-action@[0-9a-f]{40}/, "publish workflow must create an SBOM with an immutable action revision");
-requireMatch(publish, /^\s+format:\s*spdx-json\s*$/m, "publish SBOM must use SPDX JSON");
-requireMatch(publish, /aquasecurity\/trivy-action@[0-9a-f]{40}/, "publish workflow must scan with an immutable Trivy action revision");
-requireMatch(publish, /^\s+severity:\s*['"]?CRITICAL,HIGH['"]?\s*$/m, "publish Trivy scan must cover High and Critical findings");
-requireMatch(publish, /^\s+exit-code:\s*['"]1['"]\s*$/m, "publish Trivy scan must fail on findings");
-requireMatch(publish, /^\s+ignore-unfixed:\s*true\s*$/m, "publish Trivy scan must distinguish actionable findings from unfixed upstream findings");
-requireMatch(publish, /^\s+ignore-unfixed:\s*false\s*$/m, "publish must retain unfixed findings in its complete vulnerability inventory");
-requireMatch(publish, /^\s+output:\s*trivy-high-critical\.json\s*$/m, "publish must write a complete High/Critical JSON inventory");
-requireMatch(publish, /^\s+exit-code:\s*['"]0['"]\s*$/m, "publish complete vulnerability inventory must be uploaded before gating");
-requireMatch(publish, /actions\/upload-artifact@[0-9a-f]{40}/, "publish must upload the complete vulnerability inventory");
-requireMatch(publish, /actions\/attest-build-provenance@[0-9a-f]{40}/, "publish workflow must create provenance with an immutable action revision");
-requireMatch(publish, /^\s+push-to-registry:\s*true\s*$/m, "publish provenance must be pushed to GHCR");
-requireMatch(publish, /^\s+subject-digest:\s*\$\{\{ steps\.push\.outputs\.digest \}\}\s*$/m, "publish provenance must attest the pushed digest");
 
-const publishGateIndex = publish.indexOf("- name: Fail on fixable High and Critical vulnerabilities");
-const publishLoginIndex = publish.indexOf("- name: Log in to GHCR");
-const publishPushIndex = publish.indexOf('docker push "${IMAGE_NAME}:sha-${GITHUB_SHA}"');
-if (publishGateIndex < 0 || publishLoginIndex < publishGateIndex || publishPushIndex < publishLoginIndex) {
-  errors.push("publish workflow must scan and pass the vulnerability gate before GHCR login and push");
+function validateDatabaseSteps(steps, errors) {
+  const migrationCommands = ["npm run prisma:generate", "npm run prisma:validate", "npx prisma migrate deploy"];
+  const runtimeCommands = ["npm run test:unit", "npm run test:integration", "npm run test:e2e"];
+  for (const command of migrationCommands) {
+    const step = steps.find((candidate) => scalar(candidate?.run).trim() === command);
+    if (!step || !scalar(step.env?.MIGRATION_DATABASE_URL)) {
+      errors.push(`CI ${command} must receive MIGRATION_DATABASE_URL`);
+    }
+  }
+  for (const command of runtimeCommands) {
+    const step = steps.find((candidate) => scalar(candidate?.run).trim() === command);
+    if (!step || !scalar(step.env?.DATABASE_URL)) {
+      errors.push(`CI ${command} must receive runtime DATABASE_URL`);
+    }
+  }
+
+  const e2e = steps.find((candidate) => scalar(candidate?.run).trim() === "npm run test:e2e");
+  const credentialKeys = [
+    "E2E_ADMIN_PHONE",
+    "E2E_ADMIN_PASSWORD",
+    "E2E_USER_PHONE",
+    "E2E_USER_PASSWORD",
+    "E2E_NEW_PASSWORD",
+    "E2E_INVALID_PASSWORD",
+  ];
+  for (const key of credentialKeys) {
+    const value = scalar(e2e?.env?.[key]);
+    if (!value || value.includes("${{")) errors.push(`CI ${key} must be a literal non-production fixture value`);
+    if (key.endsWith("_PHONE") && !/^1\d{10}$/.test(value)) {
+      errors.push(`CI ${key} must be an 11-digit fixture phone number`);
+    }
+    if (key.endsWith("_PASSWORD")
+      && !(value.length >= 16 && /[A-Z]/.test(value) && /[a-z]/.test(value)
+        && /\d/.test(value) && /[^A-Za-z0-9]/.test(value))) {
+      errors.push(`CI ${key} must be a strong fixture password`);
+    }
+  }
 }
 
-if (errors.length > 0) {
-  console.error("Workflow validation failed:");
-  for (const error of errors) console.error(`- ${error}`);
-  process.exitCode = 1;
-} else {
-  console.log("Workflow validation passed.");
+function validateImageSecurityChain(name, steps, expectedImage, errors) {
+  const sbomMatches = findActionSteps(steps, "anchore/sbom-action");
+  if (sbomMatches.length !== 1) {
+    errors.push(`${name} must contain exactly one SBOM step`);
+  } else {
+    const { step } = sbomMatches[0];
+    if (scalar(step.with?.format) !== "spdx-json") errors.push(`${name} SBOM must use SPDX JSON`);
+    if (normalizeImage(step.with?.image) !== expectedImage) {
+      errors.push(`${name} SBOM image must match the scanned build image`);
+    }
+  }
+
+  const trivy = findActionSteps(steps, "aquasecurity/trivy-action");
+  const inventoryMatches = trivy.filter(({ step }) => scalar(step.with?.output));
+  const gateMatches = trivy.filter(({ step }) => scalar(step.with?.["exit-code"]) === "1");
+  if (inventoryMatches.length !== 1) errors.push(`${name} must contain exactly one vulnerability inventory step`);
+  if (gateMatches.length !== 1) errors.push(`${name} must contain exactly one vulnerability gate step`);
+
+  const inventory = inventoryMatches[0];
+  const gate = gateMatches[0];
+  if (inventory) {
+    const settings = inventory.step.with ?? {};
+    if (scalar(settings.format) !== "json") errors.push(`${name} inventory must use JSON`);
+    if (scalar(settings.severity) !== "CRITICAL,HIGH") errors.push(`${name} inventory must cover CRITICAL,HIGH`);
+    if (scalar(settings["exit-code"]) !== "0") errors.push(`${name} inventory must use exit-code 0`);
+    if (settings["ignore-unfixed"] !== false) errors.push(`${name} inventory must include unfixed findings`);
+    if (normalizeImage(settings["image-ref"]) !== expectedImage) {
+      errors.push(`${name} inventory image must match the scanned build image`);
+    }
+  }
+  if (gate) {
+    const settings = gate.step.with ?? {};
+    if (scalar(settings.format) !== "table") errors.push(`${name} gate must use table output`);
+    if (scalar(settings.severity) !== "CRITICAL,HIGH") errors.push(`${name} gate must cover CRITICAL,HIGH`);
+    if (settings["ignore-unfixed"] !== true) errors.push(`${name} gate must ignore unfixed findings`);
+    if (normalizeImage(settings["image-ref"]) !== expectedImage) {
+      errors.push(`${name} gate image must match the scanned build image`);
+    }
+  }
+
+  const uploads = findActionSteps(steps, "actions/upload-artifact");
+  if (uploads.length !== 1) {
+    errors.push(`${name} inventory artifact upload step is required exactly once`);
+  } else if (inventory) {
+    const upload = uploads[0];
+    const output = scalar(inventory.step.with?.output);
+    if (!output || scalar(upload.step.with?.path) !== output) {
+      errors.push(`${name} artifact path must exactly match inventory output`);
+    }
+    if (upload.step.with?.["if-no-files-found"] !== "error") {
+      errors.push(`${name} artifact upload must fail when the inventory file is absent`);
+    }
+    if (!(inventory.index < upload.index && (!gate || upload.index < gate.index))) {
+      errors.push(`${name} inventory artifact must be uploaded after inventory and before the gate`);
+    }
+  }
+
+  return { gateIndex: gate?.index ?? -1 };
+}
+
+function validateCi(workflow, errors) {
+  validateTriggers("CI", workflow, { pull_request: ["master"], push: ["master"] }, errors);
+  if (!exactPermissions(workflow.permissions, { contents: "read" })) {
+    errors.push("CI permissions must be exactly contents: read");
+  }
+  const secretLocations = findSecrets(workflow);
+  for (const location of secretLocations) errors.push(`CI must not reference secrets. (found at ${location})`);
+
+  const jobs = entries(workflow.jobs);
+  if (jobs.length !== 1 || jobs[0][0] !== "quality") errors.push("CI must contain exactly the quality job");
+  for (const [jobName, job] of jobs) {
+    if (job?.permissions !== undefined) {
+      errors.push(`CI job ${jobName} must inherit the root read-only permissions without overrides`);
+    }
+  }
+  const steps = Array.isArray(workflow.jobs?.quality?.steps) ? workflow.jobs.quality.steps : [];
+  validateDatabaseSteps(steps, errors);
+
+  for (const { step } of findActionSteps(steps, "docker/login-action")) {
+    errors.push(`CI must not authenticate to a registry (${step.name ?? "unnamed step"})`);
+  }
+  for (const { step } of commandSteps(steps, /\bdocker\s+(?:login|push)\b/)) {
+    errors.push(`CI must not run docker login or push (${step.name ?? "unnamed step"})`);
+  }
+  for (const step of steps) {
+    if (step?.with?.push === true || scalar(step?.with?.push) === "true") {
+      errors.push(`CI must not enable action-based image pushes (${step.name ?? "unnamed step"})`);
+    }
+  }
+  if (findActionSteps(steps, "actions/attest-build-provenance").length > 0) {
+    errors.push("CI must not create registry attestations");
+  }
+
+  const builds = findActionSteps(steps, "docker/build-push-action");
+  if (builds.length !== 1) {
+    errors.push("CI must contain exactly one container build step");
+  } else {
+    const settings = builds[0].step.with ?? {};
+    if (settings.load !== true) errors.push("CI container build must set load: true");
+    if (settings.push !== false) errors.push("CI container build must set push: false");
+    if (scalar(settings.tags).trim() !== CI_IMAGE) errors.push("CI must build the canonical CI image tag");
+  }
+
+  const smokes = commandSteps(steps, /\bdocker\s+run\b/);
+  if (smokes.length !== 1
+    || !/\/api\/health\/ready\b/.test(smokes[0].run)
+    || !/\/api\/health\/live\b/.test(smokes[0].run)) {
+    errors.push("CI must run the built container and check both ready and live health endpoints");
+  }
+  validateImageSecurityChain("CI", steps, CI_IMAGE, errors);
+}
+
+function validatePublish(workflow, errors) {
+  validateTriggers("publish", workflow, { push: ["master"] }, errors);
+  if (!exactPermissions(workflow.permissions, {
+    contents: "read",
+    packages: "write",
+    "id-token": "write",
+    attestations: "write",
+  })) {
+    errors.push("publish permissions must be exactly contents: read plus packages, id-token, and attestations: write");
+  }
+  if (workflow.env?.IMAGE_NAME !== IMAGE_NAME) errors.push("publish IMAGE_NAME must be the canonical GHCR repository");
+
+  const jobs = entries(workflow.jobs);
+  if (jobs.length !== 1 || jobs[0][0] !== "publish") errors.push("publish workflow must contain exactly the publish job");
+  for (const [jobName, job] of jobs) {
+    if (job?.permissions !== undefined) {
+      errors.push(`publish job ${jobName} must inherit the exact root permissions without overrides`);
+    }
+  }
+  const steps = Array.isArray(workflow.jobs?.publish?.steps) ? workflow.jobs.publish.steps : [];
+  const builds = findActionSteps(steps, "docker/build-push-action");
+  if (builds.length !== 1) {
+    errors.push("publish workflow must contain exactly one image build step");
+  } else {
+    const settings = builds[0].step.with ?? {};
+    const tags = scalar(settings.tags).split(/\r?\n/).map((tag) => tag.trim()).filter(Boolean);
+    if (settings.load !== true) errors.push("publish build must set load: true");
+    if (settings.push !== false) errors.push("publish build must set push: false");
+    if (!exactStringArray(tags, [PUBLISH_IMAGE, `${IMAGE_NAME}:latest`])) {
+      errors.push("publish build tags must be exactly the full-sha tag and latest");
+    }
+  }
+
+  const { gateIndex } = validateImageSecurityChain("publish", steps, PUBLISH_IMAGE, errors);
+  const logins = findActionSteps(steps, "docker/login-action");
+  if (logins.length !== 1) errors.push("publish workflow must contain exactly one GHCR login step");
+  for (const { index } of logins) {
+    if (index <= gateIndex) errors.push("publish registry login must occur after the vulnerability gate");
+  }
+  const pushes = commandSteps(steps, /\bdocker\s+push\b/);
+  if (pushes.length !== 1) errors.push("publish workflow must contain exactly one push step");
+  for (const { index } of pushes) {
+    if (index <= gateIndex) errors.push("publish docker push must occur after the vulnerability gate");
+  }
+
+  const push = pushes[0]?.step;
+  const pushRun = scalar(push?.run);
+  if (push?.id !== "push"
+    || !/docker push "\$\{IMAGE_NAME\}:sha-\$\{GITHUB_SHA\}"/.test(pushRun)
+    || !/docker push "\$\{IMAGE_NAME\}:latest"/.test(pushRun)
+    || !/echo "digest=\$image_digest" >> "\$GITHUB_OUTPUT"/.test(pushRun)) {
+    errors.push("publish push step must push full-sha and latest tags and expose the registry digest");
+  }
+
+  const attestations = findActionSteps(steps, "actions/attest-build-provenance");
+  if (attestations.length !== 1) {
+    errors.push("publish workflow must contain exactly one provenance attestation step");
+  } else {
+    const { step, index } = attestations[0];
+    if (scalar(step.with?.["subject-name"]) !== "${{ env.IMAGE_NAME }}") {
+      errors.push("publish attestation subject-name must be the canonical image name");
+    }
+    if (scalar(step.with?.["subject-digest"]) !== "${{ steps.push.outputs.digest }}") {
+      errors.push("publish attestation subject-digest must use the pushed digest output");
+    }
+    if (step.with?.["push-to-registry"] !== true) errors.push("publish attestation must be pushed to the registry");
+    if (pushes[0] && index <= pushes[0].index) errors.push("publish attestation must occur after the image push");
+  }
+
+}
+
+export function validateWorkflows({ ciSource, publishSource }) {
+  const errors = [];
+  const ci = parseWorkflow("CI", ciSource, errors);
+  const publish = parseWorkflow("publish", publishSource, errors);
+  if (ci) {
+    validateActions("CI", ci, errors);
+    validateCi(ci, errors);
+  }
+  if (publish) {
+    validateActions("publish", publish, errors);
+    validatePublish(publish, errors);
+  }
+  return errors;
+}
+
+async function runCli() {
+  const [ciSource, publishSource] = await Promise.all([
+    readFile(workflowPaths.ci, "utf8"),
+    readFile(workflowPaths.publish, "utf8"),
+  ]);
+  const errors = validateWorkflows({ ciSource, publishSource });
+  if (errors.length > 0) {
+    console.error("Workflow validation failed:");
+    for (const error of errors) console.error(`- ${error}`);
+    process.exitCode = 1;
+  } else {
+    console.log("Workflow validation passed.");
+  }
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
+if (invokedPath === import.meta.url) {
+  await runCli();
 }

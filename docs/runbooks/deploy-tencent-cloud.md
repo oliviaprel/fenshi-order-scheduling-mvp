@@ -10,6 +10,17 @@ environment. The container's `DATABASE_URL` and host-only
 `OPERATIONS_DATABASE_URL` use `fenshi_app` for runtime DML and administrator
 commands respectively.
 
+## Pull request E2E fixtures
+
+The phone numbers and strong passwords declared in the pull-request CI workflow
+are public, non-production test fixtures. They are created only inside the
+disposable `fenshi_test` service database, which E2E global setup resets before
+the tests. They must never be copied into a production or shared environment.
+Keeping these values directly in the workflow makes pull requests from forks and
+Dependabot runnable without repository secrets. Global setup still rejects
+missing setup fixture values and any database name that does not end in `_test`;
+individual test helpers likewise reject empty values before use.
+
 ## GitHub 镜像供应链发布
 
 生产镜像固定为 `ghcr.io/oliviaprel/fenshi-order-scheduling-mvp`。Pull request 的
