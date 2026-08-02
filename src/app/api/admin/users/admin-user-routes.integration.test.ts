@@ -447,7 +447,7 @@ describe("administrator user management routes", () => {
       { actorUserId: admin.id, requestId: "route-reset-validation-target" },
     );
 
-    for (const body of [{}, { version: created.user.version, extra: true }]) {
+    for (const body of [{}, { version: "1" }, { version: created.user.version, extra: true }]) {
       const response = await resetPasswordRoute(
         request(`/api/admin/users/${created.user.id}/reset-password`, {
           method: "POST",

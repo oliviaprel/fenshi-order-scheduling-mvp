@@ -487,6 +487,8 @@ describe("administrator user management service", () => {
   it("rejects a password reset that uses a stale optimistic-lock version", async () => {
     const admin = await createTestAdmin();
     const { user } = await createTestUser(admin.id);
+    await createStoredSession(user.id, "stale-reset-session");
+    expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
 
     await prisma.user.update({
       where: { id: user.id },
@@ -502,7 +504,10 @@ describe("administrator user management service", () => {
       status: 409,
       code: "USER_VERSION_CONFLICT",
     } satisfies Partial<ApiError>);
-    expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
+    expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
+    await expect(
+      prisma.auditLog.findFirst({ where: { action: "USER_PASSWORD_RESET", targetId: user.id } }),
+    ).resolves.toBeNull();
   });
 
   it(
