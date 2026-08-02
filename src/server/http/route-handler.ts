@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import type { ZodType } from "zod";
 import { ApiError, toErrorResponse } from "./api-error";
 import { getRequestId } from "./request-id";
+import { logger } from "../logging/logger";
 
 type RouteContext = {
   request: NextRequest;
@@ -94,6 +95,14 @@ export async function routeHandler(request: Request, action: RouteAction): Promi
       response.headers.set("x-request-id", requestId);
       return response;
     } catch (error) {
+      if (!(error instanceof ApiError)) {
+        logger.error("Unhandled route error", {
+          requestId,
+          method: request.method,
+          pathname: new URL(request.url).pathname,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        });
+      }
       const response = toErrorResponse(error, requestId);
       response.headers.set("x-request-id", requestId);
       return response;

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { ApiError } from "./api-error";
 import { parseJsonBody, routeHandler } from "./route-handler";
 
 const url = "http://localhost:3000/api/test";
@@ -12,6 +13,10 @@ function parseBodyThroughRouteHandler(request: Request): Promise<Response> {
 }
 
 describe("routeHandler", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("preserves a framework request with cookies across module boundaries", async () => {
     const request = new Request("http://localhost:3000/api/test");
     Object.defineProperty(request, "cookies", {
@@ -115,5 +120,40 @@ describe("routeHandler", () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "INVALID_JSON" } });
+  });
+
+  it("logs one safe structured error for an unknown route failure", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const request = new Request(`${url}?attempt=1`, {
+      method: "POST",
+      body: JSON.stringify({ password: "must-never-be-logged" }),
+    });
+
+    const response = await routeHandler(request, async () => {
+      throw new Error("postgresql://user:password@database/private");
+    });
+
+    expect(response.status).toBe(500);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(log.mock.calls[0]?.[0] as string)).toEqual({
+      timestamp: expect.any(String),
+      level: "error",
+      message: "Unhandled route error",
+      requestId: response.headers.get("x-request-id"),
+      method: "POST",
+      pathname: "/api/test",
+      errorName: "Error",
+    });
+  });
+
+  it("does not duplicate an expected ApiError in the unknown error log", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const response = await routeHandler(new Request(url), async () => {
+      throw new ApiError(403, "FORBIDDEN", "Forbidden");
+    });
+
+    expect(response.status).toBe(403);
+    expect(log).not.toHaveBeenCalled();
   });
 });

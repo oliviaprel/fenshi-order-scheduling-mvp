@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createLogger } from "./logger";
-import { redact } from "./redaction";
+import { isSensitiveKey, redact } from "./redaction";
 
 describe("structured logging", () => {
   it("redacts sensitive keys recursively without changing allowed fields", () => {
@@ -31,6 +31,38 @@ describe("structured logging", () => {
         "public-value",
       ],
     });
+  });
+
+  it("redacts normalized sensitive key fragments at every nesting level", () => {
+    expect(
+      redact({
+        temporaryPassword: "temporary-password",
+        currentPassword: "current-password",
+        newPassword: "new-password",
+        sessionToken: "session-token",
+        setCookie: "session=raw",
+        clientSecret: "client-secret",
+        DATABASE_URL: "postgresql://user:password@database/private",
+        nested: {
+          temporary_password: "nested-temporary-password",
+          connectionString: "Server=database;Password=secret",
+        },
+      }),
+    ).toEqual({
+      temporaryPassword: "[REDACTED]",
+      currentPassword: "[REDACTED]",
+      newPassword: "[REDACTED]",
+      sessionToken: "[REDACTED]",
+      setCookie: "[REDACTED]",
+      clientSecret: "[REDACTED]",
+      DATABASE_URL: "[REDACTED]",
+      nested: {
+        temporary_password: "[REDACTED]",
+        connectionString: "[REDACTED]",
+      },
+    });
+
+    expect(isSensitiveKey("safeDisplayName")).toBe(false);
   });
 
   it("emits one JSON object with required fields and omits production request bodies", () => {

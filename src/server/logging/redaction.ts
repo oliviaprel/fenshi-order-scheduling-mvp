@@ -1,13 +1,18 @@
 const REDACTED = "[REDACTED]";
-const sensitiveKeys = new Set([
+const sensitiveKeyFragments = [
   "password",
-  "passwordhash",
   "token",
-  "tokenhash",
   "cookie",
   "authorization",
+  "secret",
   "databaseurl",
-]);
+  "connectionstring",
+];
+
+export function isSensitiveKey(key: string): boolean {
+  const normalizedKey = key.replace(/[^a-z]/gi, "").toLowerCase();
+  return sensitiveKeyFragments.some((fragment) => normalizedKey.includes(fragment));
+}
 
 export function redact(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -21,7 +26,7 @@ export function redact(value: unknown): unknown {
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      sensitiveKeys.has(key.toLowerCase()) ? REDACTED : redact(item),
+      isSensitiveKey(key) ? REDACTED : redact(item),
     ]),
   );
 }
