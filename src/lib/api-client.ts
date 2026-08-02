@@ -120,6 +120,10 @@ export async function updateAdminUser(
 
 export async function resetAdminUserPassword(
   id: string,
+  version: number,
 ): Promise<{ temporaryPassword: string }> {
-  return adminRequest(`/api/admin/users/${id}/reset-password`, { method: "POST" });
+  return adminRequest(`/api/admin/users/${id}/reset-password`, {
+    method: "POST",
+    body: { version },
+  });
 }

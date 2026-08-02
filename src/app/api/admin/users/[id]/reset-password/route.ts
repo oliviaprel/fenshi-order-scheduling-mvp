@@ -3,13 +3,16 @@ import { resetManagedUserPassword } from "../../../../../../modules/users/admin-
 import { requireAdmin } from "../../../../../../server/auth/guards";
 import { ApiError } from "../../../../../../server/http/api-error";
 import { assertAllowedOrigin } from "../../../../../../server/http/origin";
-import { routeHandler } from "../../../../../../server/http/route-handler";
+import { parseJsonBody, routeHandler } from "../../../../../../server/http/route-handler";
 
 type ResetPasswordRouteContext = {
   params: Promise<{ id: string }>;
 };
 
 const userIdSchema = z.string().uuid();
+const resetPasswordSchema = z.object({
+  version: z.number().int().min(1),
+}).strict();
 
 function parseUserId(id: string): string {
   const parsed = userIdSchema.safeParse(id);
@@ -29,8 +32,9 @@ export async function POST(
     assertAllowedOrigin(routeRequest);
     const actor = await requireAdmin();
     const id = parseUserId((await context.params).id);
+    const input = await parseJsonBody(routeRequest, resetPasswordSchema);
     return Response.json(
-      await resetManagedUserPassword(id, { actorUserId: actor.id, requestId }),
+      await resetManagedUserPassword(id, input.version, { actorUserId: actor.id, requestId }),
     );
   });
 }

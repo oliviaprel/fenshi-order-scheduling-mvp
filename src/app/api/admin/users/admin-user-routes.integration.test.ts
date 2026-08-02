@@ -440,7 +440,30 @@ describe("administrator user management routes", () => {
     });
   });
 
-  it("updates a USER with 200 and resets a password with 200 without later secret exposure", async () => {
+  it("requires exactly a version for reset password requests", async () => {
+    const { admin, cookie } = await createAdminActor();
+    const created = await createManagedUser(
+      { displayName: "重置校验用户", phone: "13800138000" },
+      { actorUserId: admin.id, requestId: "route-reset-validation-target" },
+    );
+
+    for (const body of [{}, { version: created.user.version, extra: true }]) {
+      const response = await resetPasswordRoute(
+        request(`/api/admin/users/${created.user.id}/reset-password`, {
+          method: "POST",
+          cookie,
+          body,
+        }),
+        params(created.user.id),
+      );
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "VALIDATION_ERROR" },
+      });
+    }
+  });
+
+  it("updates a USER with 200 and resets a password with its displayed version without later secret exposure", async () => {
     const { admin, cookie } = await createAdminActor();
     const created = await createManagedUser(
       { displayName: "待修改用户", phone: "13800138000" },
@@ -484,6 +507,7 @@ describe("administrator user management routes", () => {
       request(`/api/admin/users/${created.user.id}/reset-password`, {
         method: "POST",
         cookie,
+        body: { version: created.user.version + 1 },
         requestId: "api-reset-user",
       }),
       params(created.user.id),
@@ -500,5 +524,31 @@ describe("administrator user management routes", () => {
       where: { action: "USER_PASSWORD_RESET", targetId: created.user.id },
     });
     expect(JSON.stringify(audit)).not.toContain(resetBody.temporaryPassword);
+  });
+
+  it("returns USER_VERSION_CONFLICT for a stale password reset version", async () => {
+    const { admin, cookie } = await createAdminActor();
+    const created = await createManagedUser(
+      { displayName: "重置冲突用户", phone: "13800138000" },
+      { actorUserId: admin.id, requestId: "route-stale-reset-target" },
+    );
+    await prisma.user.update({
+      where: { id: created.user.id },
+      data: { version: { increment: 1 } },
+    });
+
+    const response = await resetPasswordRoute(
+      request(`/api/admin/users/${created.user.id}/reset-password`, {
+        method: "POST",
+        cookie,
+        body: { version: created.user.version },
+      }),
+      params(created.user.id),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "USER_VERSION_CONFLICT" },
+    });
   });
 });

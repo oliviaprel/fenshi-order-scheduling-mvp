@@ -32,10 +32,13 @@ export function ResetPasswordDialog({
     setIsSubmitting(true);
     setError(null);
     try {
-      const result = await resetAdminUserPassword(user.id);
+      const result = await resetAdminUserPassword(user.id, user.version);
       await onReset();
       setTemporaryPassword(result.temporaryPassword);
     } catch (caught) {
+      if (caught instanceof ApiClientError && caught.code === "USER_VERSION_CONFLICT") {
+        await onReset();
+      }
       setError(caught instanceof ApiClientError ? caught.message : "重置失败，请稍后重试");
     } finally {
       setIsSubmitting(false);

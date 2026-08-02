@@ -288,7 +288,7 @@ describe("administrator user management service", () => {
         context,
       ),
     ).rejects.toMatchObject({ status: 403 } satisfies Partial<ApiError>);
-    await expect(resetManagedUserPassword(admin.id, context)).rejects.toMatchObject({
+    await expect(resetManagedUserPassword(admin.id, admin.version, context)).rejects.toMatchObject({
       status: 403,
     } satisfies Partial<ApiError>);
   });
@@ -316,9 +316,34 @@ describe("administrator user management service", () => {
       version: user.version + 1,
     });
     expect(await prisma.session.count({ where: { userId: user.id } })).toBe(1);
-    await expect(
-      prisma.auditLog.findFirstOrThrow({ where: { action: "USER_UPDATED", targetId: user.id } }),
-    ).resolves.toMatchObject({ requestId: "pause-user" });
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "USER_UPDATED", targetId: user.id },
+    });
+    expect(audit).toMatchObject({ requestId: "pause-user" });
+    expect(audit.beforeJson).toMatchObject({
+      id: user.id,
+      role: "USER",
+      displayName: "清和堂",
+      phone: "13800138000",
+      status: "ACTIVE",
+      mustChangePassword: true,
+      version: user.version,
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    });
+    expect(audit.beforeJson).not.toHaveProperty("passwordHash");
+    expect(audit.afterJson).toMatchObject({
+      id: user.id,
+      role: "USER",
+      displayName: "新名称",
+      phone: "13600136000",
+      status: "PAUSED",
+      mustChangePassword: true,
+      version: user.version + 1,
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    });
+    expect(audit.afterJson).not.toHaveProperty("passwordHash");
   });
 
   it("returns 409 when creating or updating to a duplicate normalized phone", async () => {
@@ -414,7 +439,7 @@ describe("administrator user management service", () => {
     await createStoredSession(created.user.id, "reset-session-one");
     await createStoredSession(created.user.id, "reset-session-two");
 
-    const result = await resetManagedUserPassword(created.user.id, {
+    const result = await resetManagedUserPassword(created.user.id, created.user.version, {
       actorUserId: admin.id,
       requestId: "reset-user-password",
     });
@@ -431,8 +456,53 @@ describe("administrator user management service", () => {
       where: { action: "USER_PASSWORD_RESET", targetId: created.user.id },
     });
     expect(audit).toMatchObject({ actorUserId: admin.id, requestId: "reset-user-password" });
+    expect(audit.beforeJson).toMatchObject({
+      id: created.user.id,
+      role: "USER",
+      displayName: "清和堂",
+      phone: "13800138000",
+      status: "ACTIVE",
+      mustChangePassword: false,
+      version: created.user.version,
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    });
+    expect(audit.beforeJson).not.toHaveProperty("passwordHash");
+    expect(audit.afterJson).toMatchObject({
+      id: created.user.id,
+      role: "USER",
+      displayName: "清和堂",
+      phone: "13800138000",
+      status: "ACTIVE",
+      mustChangePassword: true,
+      version: created.user.version + 1,
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    });
+    expect(audit.afterJson).not.toHaveProperty("passwordHash");
     expect(JSON.stringify(audit)).not.toContain(result.temporaryPassword);
     expect(JSON.stringify(audit)).not.toContain(stored.passwordHash);
+  });
+
+  it("rejects a password reset that uses a stale optimistic-lock version", async () => {
+    const admin = await createTestAdmin();
+    const { user } = await createTestUser(admin.id);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { version: { increment: 1 } },
+    });
+
+    await expect(
+      resetManagedUserPassword(user.id, user.version, {
+        actorUserId: admin.id,
+        requestId: "stale-reset-user-password",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "USER_VERSION_CONFLICT",
+    } satisfies Partial<ApiError>);
+    expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
   });
 
   it(

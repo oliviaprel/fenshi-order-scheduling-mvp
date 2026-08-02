@@ -135,6 +135,7 @@ export async function updateManagedUser(
 
   try {
     return await prisma.$transaction(async (tx) => {
+      const before = await tx.user.findUnique({ where: { id } });
       const result = await tx.user.updateMany({
         where: { id, version: input.version, role: "USER" },
         data: {
@@ -159,7 +160,7 @@ export async function updateManagedUser(
         action: input.status === "DISABLED" ? "USER_DISABLED" : "USER_UPDATED",
         targetType: "User",
         targetId: id,
-        before: { version: input.version },
+        before: before === null ? undefined : toPublicUser(before),
         after: publicUser,
         requestId: context.requestId,
       });
@@ -176,14 +177,16 @@ export async function updateManagedUser(
 
 export async function resetManagedUserPassword(
   id: string,
+  expectedVersion: number,
   context: AdminContext,
 ): Promise<{ temporaryPassword: string }> {
   const temporaryPassword = generateTemporaryPassword();
   const passwordHash = await hashPassword(temporaryPassword);
 
   await prisma.$transaction(async (tx) => {
+    const before = await tx.user.findUnique({ where: { id } });
     const result = await tx.user.updateMany({
-      where: { id, role: "USER" },
+      where: { id, role: "USER", version: expectedVersion },
       data: {
         passwordHash,
         mustChangePassword: true,
@@ -192,20 +195,19 @@ export async function resetManagedUserPassword(
       },
     });
     if (result.count === 0) {
-      return throwManagedTargetError(tx, id);
+      return throwManagedTargetError(tx, id, expectedVersion);
     }
 
     await tx.session.deleteMany({ where: { userId: id } });
     const updated = await tx.user.findUniqueOrThrow({ where: { id } });
+    const publicUser = toPublicUser(updated);
     await writeAudit(tx, {
       actorUserId: context.actorUserId,
       action: "USER_PASSWORD_RESET",
       targetType: "User",
       targetId: id,
-      after: {
-        mustChangePassword: updated.mustChangePassword,
-        version: updated.version,
-      },
+      before: before === null ? undefined : toPublicUser(before),
+      after: publicUser,
       requestId: context.requestId,
     });
   });
