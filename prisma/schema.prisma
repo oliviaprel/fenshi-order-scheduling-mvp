@@ -44,7 +44,7 @@ model Session {
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
-  @@index([expiresAt])
+  @@index([expiresAt, id])
 }
 
 model LoginThrottle {
@@ -53,6 +53,8 @@ model LoginThrottle {
   failureCount    Int
   blockedUntil    DateTime?
   updatedAt       DateTime  @updatedAt
+
+  @@index([updatedAt, blockedUntil, keyHash])
 }
 
 model LoginAttemptReservation {
@@ -64,6 +66,7 @@ model LoginAttemptReservation {
 
   @@index([phoneKeyHash, expiresAt])
   @@index([ipKeyHash, expiresAt])
+  @@index([expiresAt, id])
 }
 
 model AuditLog {

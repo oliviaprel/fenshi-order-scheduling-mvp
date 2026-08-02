@@ -51,9 +51,9 @@ describe("maintenance CLI", () => {
     });
 
     expect(exitCode).toBe(1);
-    expect(stdout).toEqual([]);
-    expect(stderr).toEqual([`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`]);
-    expect(stderr.join("")).not.toContain(secret);
+    expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`]);
+    expect(stderr).toEqual([]);
+    expect(stdout.join("")).not.toContain(secret);
   });
 
   it("fails before database work when the archive key is malformed even if no rows need archiving", async () => {
@@ -84,8 +84,8 @@ describe("maintenance CLI", () => {
 
     expect(exitCode).toBe(1);
     expect(executed).toBe(false);
-    expect(stdout).toEqual([]);
-    expect(stderr).toEqual([`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`]);
+    expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`]);
+    expect(stderr).toEqual([]);
   });
 });
 
@@ -109,8 +109,8 @@ describe("maintenance script lifecycle", () => {
           stderr: { write: (message) => stderr.push(message) },
         }),
       ).resolves.toBe(1);
-      expect(stdout).toEqual([]);
-      expect(stderr).toEqual([`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`]);
+      expect(stdout).toEqual([`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`]);
+      expect(stderr).toEqual([]);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -126,14 +126,12 @@ describe("maintenance script lifecycle", () => {
         archivedAuditLogs: 0,
         archiveId: null,
       })}\n`,
-      stream: "stdout" as const,
     },
     {
       exitCode: 1,
       output: `${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`,
-      stream: "stderr" as const,
     },
-  ])("preserves one $stream result when database disconnect fails", async (fixture) => {
+  ])("preserves one stdout result when database disconnect fails", async (fixture) => {
     const stdout: string[] = [];
     const stderr: string[] = [];
 
@@ -144,7 +142,7 @@ describe("maintenance script lifecycle", () => {
         stderr: { write: (message) => stderr.push(message) },
         runCli: async (runtime: Parameters<typeof runMaintenanceCli>[0]) => {
           runtime.onDatabaseAccess?.();
-          (fixture.stream === "stdout" ? runtime.write : runtime.writeError)(fixture.output);
+          runtime.write(fixture.output);
           return fixture.exitCode;
         },
         disconnectDatabase: async () => {
@@ -152,7 +150,7 @@ describe("maintenance script lifecycle", () => {
         },
       }),
     ).resolves.toBe(fixture.exitCode);
-    expect(stdout).toEqual(fixture.stream === "stdout" ? [fixture.output] : []);
-    expect(stderr).toEqual(fixture.stream === "stderr" ? [fixture.output] : []);
+    expect(stdout).toEqual([fixture.output]);
+    expect(stderr).toEqual([]);
   });
 });

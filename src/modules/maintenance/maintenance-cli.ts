@@ -29,7 +29,7 @@ export async function runMaintenanceCli(runtime: MaintenanceCliRuntime): Promise
     runtime.write(`${JSON.stringify(result)}\n`);
     return 0;
   } catch {
-    runtime.writeError(`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`);
+    runtime.write(`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`);
     return 1;
   }
 }

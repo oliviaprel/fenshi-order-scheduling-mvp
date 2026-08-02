@@ -48,7 +48,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   void main().catch(() => {
-    process.stderr.write(`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`);
+    process.stdout.write(`${JSON.stringify({ error: "MAINTENANCE_FAILED" })}\n`);
     process.exitCode = 1;
   });
 }

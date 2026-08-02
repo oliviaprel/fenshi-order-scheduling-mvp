@@ -1,5 +1,5 @@
 import { createCipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, open, rename, rm } from "node:fs/promises";
+import { open, rename, rm } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import type { AuditLog } from "../../generated/prisma/client";
@@ -29,7 +29,16 @@ type EncryptedAuditArchiveOptions = {
   directory: string;
   keyBase64: string;
   createArchiveId?: () => string;
+  fileSystem?: Partial<AuditArchiveFileSystem>;
 };
+
+type AuditArchiveFileSystem = {
+  open: typeof open;
+  rename: typeof rename;
+  rm: typeof rm;
+};
+
+const nodeFileSystem: AuditArchiveFileSystem = { open, rename, rm };
 
 function decodeKey(keyBase64: string): Buffer {
   const isBase64 =
@@ -41,11 +50,14 @@ function decodeKey(keyBase64: string): Buffer {
   return key;
 }
 
-async function syncDirectory(directory: string): Promise<void> {
+async function syncDirectory(
+  fileSystem: AuditArchiveFileSystem,
+  directory: string,
+): Promise<void> {
   if (process.platform === "win32") {
     return;
   }
-  const handle = await open(directory, "r");
+  const handle = await fileSystem.open(directory, "r");
   try {
     await handle.sync();
   } finally {
@@ -53,22 +65,27 @@ async function syncDirectory(directory: string): Promise<void> {
   }
 }
 
-async function atomicWrite(directory: string, filename: string, contents: Buffer): Promise<void> {
+async function atomicWrite(
+  fileSystem: AuditArchiveFileSystem,
+  directory: string,
+  filename: string,
+  contents: Buffer,
+): Promise<void> {
   const finalPath = join(directory, filename);
   const temporaryPath = join(directory, `.${filename}.${process.pid}.${randomUUID()}.tmp`);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
 
   try {
-    handle = await open(temporaryPath, "wx", 0o600);
+    handle = await fileSystem.open(temporaryPath, "wx", 0o600);
     await handle.writeFile(contents);
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryPath, finalPath);
-    await syncDirectory(directory);
+    await fileSystem.rename(temporaryPath, finalPath);
+    await syncDirectory(fileSystem, directory);
   } catch (error) {
     await handle?.close().catch(() => undefined);
-    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    await fileSystem.rm(temporaryPath, { force: true }).catch(() => undefined);
     throw error;
   }
 }
@@ -77,11 +94,13 @@ export class EncryptedAuditArchive implements AuditArchive {
   readonly #directory: string;
   readonly #keyBase64: string;
   readonly #createArchiveId: () => string;
+  readonly #fileSystem: AuditArchiveFileSystem;
 
   constructor(options: EncryptedAuditArchiveOptions) {
     this.#directory = resolve(options.directory);
     this.#keyBase64 = options.keyBase64;
     this.#createArchiveId = options.createArchiveId ?? randomUUID;
+    this.#fileSystem = { ...nodeFileSystem, ...options.fileSystem };
   }
 
   async write(records: readonly AuditArchiveRecord[]): Promise<AuditArchiveManifest> {
@@ -91,7 +110,6 @@ export class EncryptedAuditArchive implements AuditArchive {
       throw new Error("Archive ID contains unsafe filename characters.");
     }
 
-    await mkdir(this.#directory, { recursive: true, mode: 0o700 });
     const filename = `audit-${archiveId}.ndjson.gz.enc`;
     const ndjson = Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
     const compressed = gzipSync(ndjson);
@@ -110,8 +128,9 @@ export class EncryptedAuditArchive implements AuditArchive {
       format: "NDJSON",
     };
 
-    await atomicWrite(this.#directory, filename, ciphertext);
+    await atomicWrite(this.#fileSystem, this.#directory, filename, ciphertext);
     await atomicWrite(
+      this.#fileSystem,
       this.#directory,
       `audit-${archiveId}.manifest.json`,
       Buffer.from(`${JSON.stringify(manifest)}\n`, "utf8"),

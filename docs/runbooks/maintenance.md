@@ -2,12 +2,12 @@
 
 ## 行为与保留边界
 
-`npm run maintenance:daily` 可安全重跑。每次运行：
+`npm run --silent maintenance:daily` 可安全重跑。每次运行：
 
-- 删除 `expiresAt <= now` 的 Session 和登录预留；
-- 删除 `updatedAt` 严格早于 30 天前、且 `blockedUntil` 为空或 `blockedUntil <= now` 的限速记录；
+- 按稳定时间与 ID 顺序，每类最多删除 5000 条 `expiresAt <= now` 的 Session 和登录预留；
+- 按 `updatedAt, blockedUntil, keyHash` 稳定顺序，最多删除 5000 条 `updatedAt` 严格早于 30 天前、且 `blockedUntil` 为空或 `blockedUntil <= now` 的限速记录；每类都先选 ID 再按精确 ID 删除；
 - 审计在线保留期采用 UTC 日历年。归档边界是将 `now` 的 UTC 年减 2，日期超过目标月份末日时夹紧到月末，UTC 时分秒毫秒不变；只归档 `createdAt < cutoff`，恰好位于边界的记录仍在线；
-- 每次最多按 `createdAt, id` 升序归档 5000 条。UTF-8 NDJSON 先 gzip，再以 AES-256-GCM 加密；密文和 manifest 都经临时文件 `fsync` 后原子改名。Linux 还同步目录项，Windows 依赖同目录原子改名与已同步文件句柄；
+- 每次最多按 `createdAt, id` 升序归档 5000 条。UTF-8 NDJSON 先 gzip，再以 AES-256-GCM 加密；密文和 manifest 都经临时文件 `fsync` 后原子改名。Linux 还同步预先存在的归档目录项，Windows 依赖同目录原子改名与已同步文件句柄；adapter 不创建归档目录，缺目录时任务失败且不删除审计记录；
 - 只有密文和 manifest 均持久化成功并返回 archive ID 后，才在短事务中按本批精确 ID 和原 cutoff 删除。归档失败绝不删除审计记录；订单、订单事件和取消历史不在维护删除范围内。
 
 并发运行可能为同一批记录生成多个有效归档，但只会删除精确快照 ID；重复归档应安全保留。生产 CVM 只配置一个定时实例，避免不必要的重复文件。`archivedAuditLogs` 是本次实际删除数，可能小于 manifest 的 `count`；即使并发导致实际删除为 0，已生成归档的 `archiveId` 仍会返回。
@@ -30,10 +30,21 @@ id -u fenshi >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /us
 chgrp -R fenshi /opt/fenshi/release
 chmod -R g+rX /opt/fenshi/release
 chmod g+s /opt/fenshi/release
+install -d -o root -g fenshi -m 0750 /var/lib/fenshi
 install -d -o fenshi -g fenshi -m 0700 /var/lib/fenshi/audit-archives
 touch /etc/fenshi/maintenance.env
 chown root:fenshi /etc/fenshi/maintenance.env
 chmod 0640 /etc/fenshi/maintenance.env
+test "$(stat -c '%U:%G %a' /etc/fenshi)" = 'root:fenshi 750'
+test "$(stat -c '%U:%G %a' /etc/fenshi/tencentdb-postgresql-ca.pem)" = 'root:fenshi 640'
+test "$(stat -c '%U:%G %a' /etc/fenshi/maintenance.env)" = 'root:fenshi 640'
+test "$(stat -c '%U:%G %a' /etc/fenshi/app.env)" = 'root:root 600'
+test "$(stat -c '%U:%G %a' /var/lib/fenshi)" = 'root:fenshi 750'
+test "$(stat -c '%U:%G %a' /var/lib/fenshi/audit-archives)" = 'fenshi:fenshi 700'
+sudo -u fenshi test -r /etc/fenshi/tencentdb-postgresql-ca.pem
+sudo -u fenshi test -r /etc/fenshi/maintenance.env
+sudo -u fenshi test ! -r /etc/fenshi/app.env
+sudo -u fenshi test -w /var/lib/fenshi/audit-archives
 ```
 
 归档目录必须纳入加密备份，并将密文与对应 `.manifest.json` 一起复制。归档密钥的保留周期不得短于归档数据；轮换时记录每批归档所用密钥的受控映射，旧密钥在其最后一批归档到期前不得销毁。
@@ -54,7 +65,7 @@ User=fenshi
 Group=fenshi
 WorkingDirectory=/opt/fenshi/release
 EnvironmentFile=/etc/fenshi/maintenance.env
-ExecStart=/usr/bin/flock -n /var/lib/fenshi/audit-archives/.maintenance.lock /usr/bin/npm run maintenance:daily
+ExecStart=/usr/bin/flock -n /var/lib/fenshi/audit-archives/.maintenance.lock /usr/bin/npm run --silent maintenance:daily
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectSystem=strict
@@ -87,7 +98,7 @@ systemctl list-timers fenshi-maintenance.timer
 若只能使用 cron，使用单一条目并保留互斥锁：
 
 ```cron
-20 3 * * * /bin/bash -o pipefail -c 'set -a; . /etc/fenshi/maintenance.env; set +a; cd /opt/fenshi/release && /usr/bin/flock -n /var/lib/fenshi/audit-archives/.maintenance.lock /usr/bin/npm run maintenance:daily 2>&1 | /usr/bin/logger -t fenshi-maintenance'
+20 3 * * * /bin/bash -o pipefail -c 'set -a; . /etc/fenshi/maintenance.env; set +a; cd /opt/fenshi/release && /usr/bin/flock -n /var/lib/fenshi/audit-archives/.maintenance.lock /usr/bin/npm run --silent maintenance:daily 2>&1 | /usr/bin/logger -t fenshi-maintenance'
 ```
 
 不要同时启用 systemd timer 和 cron。
@@ -100,7 +111,7 @@ systemctl list-timers fenshi-maintenance.timer
 {"expiredSessions":2,"expiredReservations":1,"staleThrottles":3,"archivedAuditLogs":5000,"archiveId":"b0d695d0-6fc4-47bc-9886-a5db6340871d"}
 ```
 
-没有待归档记录时 `archiveId` 为 `null`。失败时退出码非零，stderr 只有安全错误码 `{"error":"MAINTENANCE_FAILED"}`；CLI 不输出审计记录、数据库连接串或归档密钥。
+没有待归档记录时 `archiveId` 为 `null`。失败时退出码非零，stdout 仍只有一行安全 JSON `{"error":"MAINTENANCE_FAILED"}`；stderr 正常为空且不得包含审计记录、数据库连接串或归档密钥。必须使用 `npm run --silent maintenance:daily`，否则 npm banner 会破坏单行 JSON 协议。
 
 使用 journald 时由平台统一限制容量与保留期（例如在 `/etc/systemd/journald.conf.d/fenshi.conf` 设置 `SystemMaxUse=1G`、`MaxRetentionSec=30day`）。cron 若改为文件日志，必须配置 `logrotate`，不得无限增长。
 
@@ -119,7 +130,7 @@ journalctl -u fenshi-maintenance.service --since '2 days ago' --output=cat
 systemctl is-active fenshi-maintenance.service
 sudo -u fenshi /usr/bin/flock -n /var/lib/fenshi/audit-archives/.maintenance.lock \
   /usr/bin/env --chdir=/opt/fenshi/release \
-  bash -c 'set -a; source /etc/fenshi/maintenance.env; set +a; npm run maintenance:daily'
+  bash -c 'set -a; source /etc/fenshi/maintenance.env; set +a; npm run --silent maintenance:daily'
 ```
 
 故障修复后连续执行两次是允许的；第二次通常返回零删除。如果第一批正好达到 5000 条，应继续重跑，直到 `archivedAuditLogs` 为 0。不要手工删除在线审计记录或不完整归档。

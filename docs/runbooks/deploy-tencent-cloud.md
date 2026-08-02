@@ -29,13 +29,21 @@ commands respectively.
 
 ## 2. 放置发布文件与 Secret
 
-在 CVM 创建 `/opt/fenshi/release`（固定版本源码）和 `/etc/fenshi`（仅 root 可读）。复制 `compose.production.example.yaml`、`deploy/Caddyfile.example` 和腾讯云 CA PEM。执行：
+在 CVM 创建 `/opt/fenshi/release`（固定版本源码）和 `/etc/fenshi`（仅 root 与受限 `fenshi` 服务组可穿越）。复制 `compose.production.example.yaml`、`deploy/Caddyfile.example` 和腾讯云 CA PEM。`app.env` 仍只允许 root 读取，维护服务只读取单独的 `maintenance.env`。执行：
 
 ```bash
-sudo install -d -m 0750 /opt/fenshi/release /etc/fenshi
-sudo install -m 0600 TencentDB-PG-SSL-CA.pem /etc/fenshi/tencentdb-postgresql-ca.pem
+id -u fenshi >/dev/null 2>&1 || sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin fenshi
+sudo install -d -m 0750 /opt/fenshi/release
+sudo install -d -o root -g fenshi -m 0750 /etc/fenshi
+sudo install -o root -g fenshi -m 0640 TencentDB-PG-SSL-CA.pem /etc/fenshi/tencentdb-postgresql-ca.pem
 sudo touch /etc/fenshi/app.env
+sudo chown root:root /etc/fenshi/app.env
 sudo chmod 0600 /etc/fenshi/app.env
+test "$(stat -c '%U:%G %a' /etc/fenshi)" = 'root:fenshi 750'
+test "$(stat -c '%U:%G %a' /etc/fenshi/tencentdb-postgresql-ca.pem)" = 'root:fenshi 640'
+test "$(stat -c '%U:%G %a' /etc/fenshi/app.env)" = 'root:root 600'
+sudo -u fenshi test -r /etc/fenshi/tencentdb-postgresql-ca.pem
+sudo -u fenshi test ! -r /etc/fenshi/app.env
 ```
 
 `/etc/fenshi/app.env` 使用 shell/Compose 可读取的单引号值；数据库用户名和密码必须 URL 编码，不得提交或粘贴到工单、聊天和日志：
