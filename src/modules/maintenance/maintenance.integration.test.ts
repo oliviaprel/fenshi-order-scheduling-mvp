@@ -35,6 +35,24 @@ function auditData(createdAt: Date, id = randomUUID()) {
   };
 }
 
+async function waitForThrottleDeleteLock(): Promise<void> {
+  const deadline = performance.now() + 1_000;
+  while (performance.now() < deadline) {
+    const [{ waiting }] = await prisma.$queryRaw<Array<{ waiting: bigint }>>`
+      SELECT COUNT(*)::bigint AS waiting
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND wait_event_type = 'Lock'
+        AND query ILIKE '%DELETE%LoginThrottle%'
+    `;
+    if (Number(waiting) > 0) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for the maintenance throttle delete lock.");
+}
+
 describe("daily maintenance", () => {
   beforeEach(resetTestDatabase);
   afterAll(() => prisma.$disconnect());
@@ -115,6 +133,132 @@ describe("daily maintenance", () => {
       expiredReservations: 1,
       staleThrottles: 1,
     });
+  });
+
+  it("keeps a stale throttle that is concurrently refreshed and reblocked before delete", async () => {
+    const staleAt = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1_000);
+    const activeKey = uniqueHash("concurrent-active", 1);
+    const staleKey = uniqueHash("concurrent-stale", 1);
+    await prisma.loginThrottle.createMany({
+      data: [
+        {
+          keyHash: activeKey,
+          windowStartedAt: staleAt,
+          failureCount: 1,
+          blockedUntil: null,
+          updatedAt: staleAt,
+        },
+        {
+          keyHash: staleKey,
+          windowStartedAt: staleAt,
+          failureCount: 1,
+          blockedUntil: null,
+          updatedAt: staleAt,
+        },
+      ],
+    });
+
+    let releaseUpdate!: () => void;
+    const updateCanCommit = new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    let markUpdateReady!: () => void;
+    const updateReady = new Promise<void>((resolve) => {
+      markUpdateReady = resolve;
+    });
+    const futureBlock = new Date(now.getTime() + 60_000);
+    const updater = prisma.$transaction(async (tx) => {
+      await tx.loginThrottle.update({
+        where: { keyHash: activeKey },
+        data: { updatedAt: now, blockedUntil: futureBlock, failureCount: 5 },
+      });
+      markUpdateReady();
+      await updateCanCommit;
+    });
+    await updateReady;
+
+    const maintenance = runMaintenance({
+      now,
+      auditArchive: { write: async () => ({ archiveId: "unused" }) },
+    });
+    try {
+      await waitForThrottleDeleteLock();
+    } finally {
+      releaseUpdate();
+    }
+    await updater;
+
+    await expect(maintenance).resolves.toMatchObject({ staleThrottles: 1 });
+    await expect(prisma.loginThrottle.findUnique({ where: { keyHash: staleKey } })).resolves.toBeNull();
+    await expect(
+      prisma.loginThrottle.findUnique({ where: { keyHash: activeKey } }),
+    ).resolves.toMatchObject({ updatedAt: now, blockedUntil: futureBlock, failureCount: 5 });
+  });
+
+  it("commits session cleanup before a reservation cleanup failure and does not start throttle cleanup", async () => {
+    const user = await prisma.user.create({
+      data: {
+        role: "USER",
+        displayName: "Transaction Boundary User",
+        phone: "13800138000",
+        passwordHash: "not-a-real-password-hash",
+      },
+    });
+    const expiredAt = new Date(now.getTime() - 1);
+    const staleAt = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1_000);
+    await prisma.session.create({
+      data: {
+        tokenHash: uniqueHash("transaction-session", 1),
+        userId: user.id,
+        expiresAt: expiredAt,
+      },
+    });
+    await prisma.loginAttemptReservation.create({
+      data: {
+        phoneKeyHash: uniqueHash("transaction-phone", 1),
+        ipKeyHash: uniqueHash("transaction-ip", 1),
+        expiresAt: expiredAt,
+      },
+    });
+    await prisma.loginThrottle.create({
+      data: {
+        keyHash: uniqueHash("transaction-throttle", 1),
+        windowStartedAt: staleAt,
+        failureCount: 1,
+        blockedUntil: null,
+        updatedAt: staleAt,
+      },
+    });
+    await prisma.$executeRawUnsafe(`
+      CREATE FUNCTION test_fail_reservation_cleanup() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE EXCEPTION 'reservation cleanup failed';
+      END;
+      $$
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER test_fail_reservation_cleanup_trigger
+      BEFORE DELETE ON "LoginAttemptReservation"
+      FOR EACH STATEMENT EXECUTE FUNCTION test_fail_reservation_cleanup()
+    `);
+
+    try {
+      await expect(
+        runMaintenance({
+          now,
+          auditArchive: { write: async () => ({ archiveId: "unused" }) },
+        }),
+      ).rejects.toThrow();
+      await expect(prisma.session.count()).resolves.toBe(0);
+      await expect(prisma.loginAttemptReservation.count()).resolves.toBe(1);
+      await expect(prisma.loginThrottle.count()).resolves.toBe(1);
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'DROP TRIGGER IF EXISTS test_fail_reservation_cleanup_trigger ON "LoginAttemptReservation"',
+      );
+      await prisma.$executeRawUnsafe("DROP FUNCTION IF EXISTS test_fail_reservation_cleanup()");
+    }
   });
 
   it("removes only expired ephemeral rows and audit logs older than the strict two-year boundary", async () => {

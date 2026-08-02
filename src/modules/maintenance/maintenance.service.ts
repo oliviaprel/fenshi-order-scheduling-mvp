@@ -39,44 +39,54 @@ export async function runMaintenance(options: MaintenanceOptions): Promise<Maint
   const { prisma } = await import("../../server/db/client");
   options.onDatabaseAccess?.();
   const throttleCutoff = new Date(now.getTime() - THROTTLE_RETENTION_MS);
-  const [expiredSessions, expiredReservations, staleThrottles] = await prisma.$transaction(
-    async (tx) => {
-      const sessionIds = await tx.session.findMany({
-        where: { expiresAt: { lte: now } },
-        orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
-        select: { id: true },
-        take: MAINTENANCE_BATCH_SIZE,
-      });
-      const expiredSessions = await tx.session.deleteMany({
-        where: { id: { in: sessionIds.map(({ id }) => id) } },
-      });
+  const expiredSessions = await prisma.$transaction(async (tx) => {
+    const sessionIds = await tx.session.findMany({
+      where: { expiresAt: { lte: now } },
+      orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+      take: MAINTENANCE_BATCH_SIZE,
+    });
+    return tx.session.deleteMany({
+      where: {
+        id: { in: sessionIds.map(({ id }) => id) },
+        expiresAt: { lte: now },
+      },
+    });
+  });
 
-      const reservationIds = await tx.loginAttemptReservation.findMany({
-        where: { expiresAt: { lte: now } },
-        orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
-        select: { id: true },
-        take: MAINTENANCE_BATCH_SIZE,
-      });
-      const expiredReservations = await tx.loginAttemptReservation.deleteMany({
-        where: { id: { in: reservationIds.map(({ id }) => id) } },
-      });
+  const expiredReservations = await prisma.$transaction(async (tx) => {
+    const reservationIds = await tx.loginAttemptReservation.findMany({
+      where: { expiresAt: { lte: now } },
+      orderBy: [{ expiresAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+      take: MAINTENANCE_BATCH_SIZE,
+    });
+    return tx.loginAttemptReservation.deleteMany({
+      where: {
+        id: { in: reservationIds.map(({ id }) => id) },
+        expiresAt: { lte: now },
+      },
+    });
+  });
 
-      const throttleIds = await tx.loginThrottle.findMany({
-        where: {
-          updatedAt: { lt: throttleCutoff },
-          OR: [{ blockedUntil: null }, { blockedUntil: { lte: now } }],
-        },
-        orderBy: [{ updatedAt: "asc" }, { blockedUntil: "asc" }, { keyHash: "asc" }],
-        select: { keyHash: true },
-        take: MAINTENANCE_BATCH_SIZE,
-      });
-      const staleThrottles = await tx.loginThrottle.deleteMany({
-        where: { keyHash: { in: throttleIds.map(({ keyHash }) => keyHash) } },
-      });
-
-      return [expiredSessions, expiredReservations, staleThrottles] as const;
-    },
-  );
+  const staleThrottles = await prisma.$transaction(async (tx) => {
+    const throttleIds = await tx.loginThrottle.findMany({
+      where: {
+        updatedAt: { lt: throttleCutoff },
+        OR: [{ blockedUntil: null }, { blockedUntil: { lte: now } }],
+      },
+      orderBy: [{ updatedAt: "asc" }, { blockedUntil: "asc" }, { keyHash: "asc" }],
+      select: { keyHash: true },
+      take: MAINTENANCE_BATCH_SIZE,
+    });
+    return tx.loginThrottle.deleteMany({
+      where: {
+        keyHash: { in: throttleIds.map(({ keyHash }) => keyHash) },
+        updatedAt: { lt: throttleCutoff },
+        OR: [{ blockedUntil: null }, { blockedUntil: { lte: now } }],
+      },
+    });
+  });
 
   const auditCutoff = auditRetentionCutoff(now);
   const auditRecords = await prisma.auditLog.findMany({

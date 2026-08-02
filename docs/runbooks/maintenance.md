@@ -5,12 +5,14 @@
 `npm run --silent maintenance:daily` 可安全重跑。每次运行：
 
 - 按稳定时间与 ID 顺序，每类最多删除 5000 条 `expiresAt <= now` 的 Session 和登录预留；
-- 按 `updatedAt, blockedUntil, keyHash` 稳定顺序，最多删除 5000 条 `updatedAt` 严格早于 30 天前、且 `blockedUntil` 为空或 `blockedUntil <= now` 的限速记录；每类都先选 ID 再按精确 ID 删除；
+- 按 `updatedAt, blockedUntil, keyHash` 稳定顺序，最多删除 5000 条 `updatedAt` 严格早于 30 天前、且 `blockedUntil` 为空或 `blockedUntil <= now` 的限速记录；最终删除同时匹配本批精确 key、原时间边界和未封禁条件，并发刷新或重新封禁的记录会保留；
 - 审计在线保留期采用 UTC 日历年。归档边界是将 `now` 的 UTC 年减 2，日期超过目标月份末日时夹紧到月末，UTC 时分秒毫秒不变；只归档 `createdAt < cutoff`，恰好位于边界的记录仍在线；
 - 每次最多按 `createdAt, id` 升序归档 5000 条。UTF-8 NDJSON 先 gzip，再以 AES-256-GCM 加密；密文和 manifest 都经临时文件 `fsync` 后原子改名。Linux 还同步预先存在的归档目录项，Windows 依赖同目录原子改名与已同步文件句柄；adapter 不创建归档目录，缺目录时任务失败且不删除审计记录；
 - 只有密文和 manifest 均持久化成功并返回 archive ID 后，才在短事务中按本批精确 ID 和原 cutoff 删除。归档失败绝不删除审计记录；订单、订单事件和取消历史不在维护删除范围内。
 
 并发运行可能为同一批记录生成多个有效归档，但只会删除精确快照 ID；重复归档应安全保留。生产 CVM 只配置一个定时实例，避免不必要的重复文件。`archivedAuditLogs` 是本次实际删除数，可能小于 manifest 的 `count`；即使并发导致实际删除为 0，已生成归档的 `archiveId` 仍会返回。
+
+Session、登录预留和限速记录各自在独立的短事务中完成“选取一批再删除”。若后一个类别失败，前面已经提交的清理不会回滚，后续类别和审计归档不会开始；整个 CLI 仍以失败退出。每个删除条件都重新校验资格，因此修复故障后重跑是幂等且安全的。
 
 ## 服务器配置
 
@@ -95,11 +97,15 @@ systemctl enable --now fenshi-maintenance.timer
 systemctl list-timers fenshi-maintenance.timer
 ```
 
-若只能使用 cron，使用单一条目并保留互斥锁：
+若只能使用 cron，将以下内容保存为 `/etc/cron.d/fenshi-maintenance`，文件所有者为 `root:root`、权限为 `0644`。cron 守护进程会明确以 `fenshi` 用户执行任务；不要把条目用户改成 root：
 
 ```cron
-20 3 * * * /bin/bash -o pipefail -c 'set -a; . /etc/fenshi/maintenance.env; set +a; cd /opt/fenshi/release && /usr/bin/flock -n /var/lib/fenshi/audit-archives/.maintenance.lock /usr/bin/npm run --silent maintenance:daily 2>&1 | /usr/bin/logger -t fenshi-maintenance'
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+20 3 * * * fenshi /bin/bash -c 'set -euo pipefail; set -a; . /etc/fenshi/maintenance.env; set +a; cd /opt/fenshi/release; /usr/bin/flock -n /var/lib/fenshi/audit-archives/.maintenance.lock /usr/bin/npm run --silent maintenance:daily 2>&1 | /usr/bin/logger -t fenshi-maintenance'
 ```
+
+安装后执行 `chown root:root /etc/cron.d/fenshi-maintenance && chmod 0644 /etc/cron.d/fenshi-maintenance`。`set -euo pipefail` 使环境文件、工作目录、互斥锁、维护命令或日志管道任一环节失败时整条任务以非零状态结束。
 
 不要同时启用 systemd timer 和 cron。
 
