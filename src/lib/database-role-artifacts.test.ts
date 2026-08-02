@@ -71,7 +71,9 @@ describe("database role deployment artifacts", () => {
     const dockerfile = readProjectFile("Dockerfile");
     const ci = readProjectFile(".github/workflows/ci.yml");
 
-    expect(dockerfile).toContain("RUN npm ci --no-audit --maxsockets=5");
+    expect(dockerfile).toContain(
+      "RUN npm ci --no-audit --maxsockets=5 --loglevel=verbose",
+    );
     expect(dockerfile).not.toMatch(/npm ci .*--ignore-scripts/);
     expect(ci).toContain("npm audit --omit=dev --audit-level=high");
   });

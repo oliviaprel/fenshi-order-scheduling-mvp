@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --maxsockets=5
+RUN npm ci --no-audit --maxsockets=5 --loglevel=verbose
 
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
