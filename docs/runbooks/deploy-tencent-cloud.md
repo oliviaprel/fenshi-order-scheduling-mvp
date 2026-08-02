@@ -10,6 +10,54 @@ environment. The container's `DATABASE_URL` and host-only
 `OPERATIONS_DATABASE_URL` use `fenshi_app` for runtime DML and administrator
 commands respectively.
 
+## GitHub 镜像供应链发布
+
+生产镜像固定为 `ghcr.io/oliviaprel/fenshi-order-scheduling-mvp`。Pull request 的
+`CI` 工作流只在 runner 本地构建和启动镜像，并生成 SBOM、执行 High/Critical
+漏洞扫描；它没有 GHCR 登录、镜像推送、OIDC 或 attestation 写权限。只有
+`master` push 触发的 `Publish image` 工作流可以推送：
+
+- `sha-<完整 40 位提交 SHA>`，用于追踪构建输入；
+- `latest`，只作为人工浏览便利标签，禁止用于生产部署；
+- 工作流摘要中的 `ghcr.io/oliviaprel/fenshi-order-scheduling-mvp@sha256:...`，
+  这是部署和回滚必须记录的不可变引用。
+
+首次发布后，包管理员必须在 package settings 将 GHCR package 改为
+**Public**。GitHub 新 package 默认为 private，而且 public 变更不可逆；确认仓库、
+包名和发布内容无误后再操作。随后从未登录 GHCR 的临时 Docker 配置验证匿名拉取：
+
+```bash
+COMMIT_SHA='替换为 master 的完整 40 位提交 SHA'
+IMAGE_REF="ghcr.io/oliviaprel/fenshi-order-scheduling-mvp:sha-${COMMIT_SHA}"
+anonymous_docker_config="$(mktemp -d)"
+docker --config "$anonymous_docker_config" pull "$IMAGE_REF"
+IMAGE_DIGEST="$(docker image inspect --format='{{index .RepoDigests 0}}' "$IMAGE_REF" | cut -d@ -f2)"
+rm -rf "$anonymous_docker_config"
+printf '%s\n' "ghcr.io/oliviaprel/fenshi-order-scheduling-mvp@${IMAGE_DIGEST}"
+```
+
+在对应 `Publish image` run 中确认 Trivy 步骤成功，并下载名为
+`fenshi-image-<提交 SHA>.spdx.json` 的 artifact。文件内容必须是 SPDX JSON，且
+artifact 对应同一个提交。用 GitHub CLI 验证 provenance：
+
+同一个 run 还必须下载 `fenshi-image-vulnerabilities-<提交 SHA>` artifact。它是
+`ignore-unfixed: false` 生成的完整 High/Critical JSON 清单，必须包含当前尚无上游
+修复的发现。发布 gate 另以 `ignore-unfixed: true` 和 `exit-code: 1` 阻断所有已有
+修复的 High/Critical；这是一项受控的可处置性策略，不表示镜像没有漏洞，也不得
+改成忽略已有修复的漏洞。每次部署评审完整清单，发现上游新增修复后必须升级基础
+镜像并清零对应项，Stage 8 将清单纳入持续审计证据。
+
+```bash
+gh attestation verify \
+  "oci://ghcr.io/oliviaprel/fenshi-order-scheduling-mvp@${IMAGE_DIGEST}" \
+  --repo oliviaprel/fenshi-order-scheduling-mvp
+```
+
+将 Actions run URL、提交 SHA、镜像 digest、SBOM artifact、完整 Trivy JSON、
+fixable gate 结果、attestation 验证输出和 package Public 截图保存到
+`docs/deployment-evidence/YYYY-MM-DD-stage-1/`。GitHub 外部配置步骤见
+[`github-ruleset.md`](github-ruleset.md)。
+
 ## 目的与发布门槛
 
 本文面向未参与开发的发布人员。生产拓扑固定为“公网 → Caddy HTTPS → 私网 Node 容器 → 腾讯云托管 PostgreSQL”，应用端口 3000 和数据库端口不得暴露到公网。
@@ -50,7 +98,7 @@ sudo -u fenshi test ! -r /etc/fenshi/app.env
 
 ```dotenv
 APP_DOMAIN='orders.example.com'
-APP_IMAGE='registry.example.com/fenshi-order-scheduling-mvp@sha256:替换为已验签摘要'
+APP_IMAGE='ghcr.io/oliviaprel/fenshi-order-scheduling-mvp@sha256:替换为已验签摘要'
 TENCENTDB_POSTGRESQL_CA_FILE='/etc/fenshi/tencentdb-postgresql-ca.pem'
 DATABASE_URL='postgresql://fenshi_app:URL编码密码@私网VIP:5432/fenshi?sslmode=verify-full&sslrootcert=/run/secrets/tencentdb-postgresql-ca.pem'
 OPERATIONS_DATABASE_URL='postgresql://fenshi_app:URL编码密码@私网VIP:5432/fenshi?sslmode=verify-full&sslrootcert=/etc/fenshi/tencentdb-postgresql-ca.pem'
