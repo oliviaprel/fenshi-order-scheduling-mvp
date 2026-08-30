@@ -135,7 +135,7 @@ jobs:
           exit 1
       - name: Generate SPDX JSON SBOM
         id: generate_sbom
-        uses: anchore/sbom-action@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
+        uses: anchore/sbom-action@aa80c8c5bd439a416a62804f2151ab38c671a638 # v0.24.1
         with:
           image: ghcr.io/oliviaprel/fenshi-order-scheduling-mvp:ci-${{ github.sha }}
           format: spdx-json
@@ -171,7 +171,7 @@ jobs:
           vuln-type: os,library
       - name: Generate production Caddy SPDX JSON SBOM
         id: caddy_sbom
-        uses: anchore/sbom-action@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
+        uses: anchore/sbom-action@aa80c8c5bd439a416a62804f2151ab38c671a638 # v0.24.1
         with:
           image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
           format: spdx-json
